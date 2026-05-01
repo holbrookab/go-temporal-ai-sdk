@@ -444,6 +444,7 @@ func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *act
 				Type:             "tool-call",
 				ToolCallID:       part.ToolCallID,
 				ToolName:         part.ToolName,
+				Input:            toolCallInputFromRaw(input),
 				InputRaw:         input,
 				ProviderMetadata: part.ProviderMetadata,
 			})
@@ -461,4 +462,15 @@ func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *act
 		out.Content = append([]activities.Part{{Type: "reasoning", Text: reasoning}}, out.Content...)
 	}
 	return out
+}
+
+func toolCallInputFromRaw(inputRaw string) any {
+	if inputRaw == "" {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(inputRaw), &parsed); err != nil {
+		return nil
+	}
+	return parsed
 }

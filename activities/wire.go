@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
@@ -252,7 +253,7 @@ func PartFromAI(part ai.Part) Part {
 		if part.Error != nil {
 			errorText = part.Error.Error()
 		}
-		return Part{Type: "tool-call", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, ErrorText: errorText, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return Part{Type: "tool-call", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, ErrorText: errorText, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.ToolResultPart:
 		return Part{Type: "tool-result", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.SourcePart:
@@ -273,7 +274,7 @@ func (part Part) ToAI() ai.Part {
 	case "reasoning-file":
 		return ai.ReasoningFilePart{Data: part.Data, MediaType: part.MediaType, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-call":
-		return ai.ToolCallPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return ai.ToolCallPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-result":
 		return ai.ToolResultPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "source":
@@ -327,6 +328,7 @@ func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMe
 				Type:             "tool-call",
 				ToolCallID:       part.ToolCallID,
 				ToolName:         part.ToolName,
+				Input:            toolCallInputFromRaw(nil, input),
 				InputRaw:         input,
 				ProviderMetadata: part.ProviderMetadata,
 			})
@@ -348,6 +350,17 @@ func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMe
 		result.Content = append([]Part{{Type: "reasoning", Text: reasoning}}, result.Content...)
 	}
 	return result
+}
+
+func toolCallInputFromRaw(input any, inputRaw string) any {
+	if input != nil || inputRaw == "" {
+		return input
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(inputRaw), &parsed); err != nil {
+		return input
+	}
+	return parsed
 }
 
 func (result LanguageModelGenerateResult) ToAI() ai.LanguageModelGenerateResult {

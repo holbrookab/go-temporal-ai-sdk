@@ -154,6 +154,48 @@ func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 	}
 }
 
+func TestInvokeModelStreamParsesToolCallInputRaw(t *testing.T) {
+	model := ai.NewMockLanguageModel("stream-1")
+	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		ch := make(chan ai.StreamPart, 2)
+		ch <- ai.StreamPart{Type: "tool-call", ToolCallID: "call-1", ToolName: "extractDocument", ToolInput: `{"s3Uri":"s3://bucket/resume.pdf","extractionType":"general"}`}
+		ch <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls}}
+		close(ch)
+		return &ai.LanguageModelStreamResult{Stream: ch}, nil
+	}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"stream-1": model},
+		},
+	})
+
+	result, err := acts.InvokeModelStream(context.Background(), InvokeModelStreamArgs{
+		ModelID: "stream-1",
+		Options: LanguageModelCallOptionsFromAI(ai.LanguageModelCallOptions{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result == nil || len(result.Result.Content) != 1 {
+		t.Fatalf("result content = %#v", result.Result)
+	}
+	call := result.Result.Content[0]
+	input, ok := call.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("tool input = %#v, want map", call.Input)
+	}
+	if input["s3Uri"] != "s3://bucket/resume.pdf" {
+		t.Fatalf("s3Uri = %#v", input["s3Uri"])
+	}
+	aiCall, ok := call.ToAI().(ai.ToolCallPart)
+	if !ok {
+		t.Fatalf("ToAI = %#v", call.ToAI())
+	}
+	if aiCall.Input == nil {
+		t.Fatalf("ToAI input is nil")
+	}
+}
+
 func TestInvokeModelStreamDiscardsErroredStream(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
