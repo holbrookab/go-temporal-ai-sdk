@@ -31,6 +31,8 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["sequence"] = value.Sequence
 		data["status"] = value.Status
 		data["reason"] = value.Reason
+		data["snapshotText"] = value.SnapshotText
+		data["snapshotObject"] = value.SnapshotObject
 	}
 	return map[string]any{
 		"type":      "data-llm-stream",

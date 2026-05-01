@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,9 +94,11 @@ func (c *Connector) UpdateAttemptSnapshot(ctx context.Context, snapshot streamin
 
 func (c *Connector) CompleteAttempt(ctx context.Context, completion streaming.AttemptCompletion) error {
 	if err := c.upsertAttempt(ctx, completion.AttemptRef, attemptUpdate{
-		Status:   completion.Status,
-		Sequence: completion.Sequence,
-		Reason:   completion.Reason,
+		Status:         completion.Status,
+		Sequence:       completion.Sequence,
+		SnapshotText:   completion.SnapshotText,
+		SnapshotObject: completion.SnapshotObject,
+		Reason:         completion.Reason,
 	}); err != nil {
 		return err
 	}
@@ -154,6 +157,7 @@ func (c *Connector) upsertAttempt(ctx context.Context, attempt streaming.Attempt
 		":discardReason":    update.Reason,
 		":completedAt":      completedAt(update.Status, now),
 		":expiresAt":        now.Add(c.options.ttl()).Unix(),
+		":activeStatus":     streaming.AttemptActive,
 	})
 	for k, v := range ref.ReplayAttributes {
 		values[":"+k] = v
@@ -206,13 +210,19 @@ func (c *Connector) upsertAttempt(ctx context.Context, attempt streaming.Attempt
 	if err != nil {
 		return err
 	}
+	condition := "(attribute_not_exists(snapshotSequence) OR snapshotSequence <= :snapshotSequence) AND (attribute_not_exists(#status) OR #status = :activeStatus OR :status <> :activeStatus)"
 	_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(c.options.TableName),
 		Key:                       avKey,
 		UpdateExpression:          aws.String("SET " + strings.Join(sets, ", ")),
 		ExpressionAttributeNames:  map[string]string{"#status": "status"},
 		ExpressionAttributeValues: avValues,
+		ConditionExpression:       aws.String(condition),
 	})
+	var conditional *types.ConditionalCheckFailedException
+	if errors.As(err, &conditional) {
+		return nil
+	}
 	return err
 }
 

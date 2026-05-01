@@ -96,7 +96,8 @@ func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 		if _, ok := opts.ProviderOptions[ProviderOptionsKey]; ok {
 			t.Fatalf("temporal provider option leaked to model: %#v", opts.ProviderOptions)
 		}
-		ch := make(chan ai.StreamPart, 3)
+		ch := make(chan ai.StreamPart, 4)
+		ch <- ai.StreamPart{Type: "raw", Raw: map[string]any{"event": "provider-frame"}}
 		ch <- ai.StreamPart{Type: "text-delta", TextDelta: "hel"}
 		ch <- ai.StreamPart{Type: "text-delta", TextDelta: "lo"}
 		ch <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop}}
@@ -127,8 +128,17 @@ func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.StreamParts) != 3 {
-		t.Fatalf("parts = %d", len(result.StreamParts))
+	if len(result.StreamParts) != 0 {
+		t.Fatalf("stream parts should not be returned to workflow history: %#v", result.StreamParts)
+	}
+	if result.Result == nil {
+		t.Fatal("expected compact stream result")
+	}
+	if got := ai.TextFromParts(result.Result.ToAI().Content); got != "hello" {
+		t.Fatalf("result text = %q", got)
+	}
+	if result.Result.FinishReason.Unified != ai.FinishStop {
+		t.Fatalf("finish reason = %#v", result.Result.FinishReason)
 	}
 	if len(connector.starts) != 1 {
 		t.Fatalf("starts = %d", len(connector.starts))

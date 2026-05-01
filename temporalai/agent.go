@@ -408,6 +408,9 @@ func textFromWireParts(parts []activities.Part) string {
 }
 
 func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *activities.LanguageModelGenerateResult {
+	if result.Result != nil {
+		return activities.GenerateResultFromAI(result.Result)
+	}
 	out := &activities.LanguageModelGenerateResult{
 		Request:  result.Request,
 		Response: activities.ResponseMetadataFromAI(result.Response),

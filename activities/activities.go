@@ -90,7 +90,7 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 	}
 
 	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
-	parts := []StreamPart{}
+	parts := []ai.StreamPart{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -102,13 +102,14 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 				if err := relay.Commit(ctx); err != nil {
 					return nil, err
 				}
+				result := GenerateResultFromAIStreamParts(parts, streamResult.Request, streamResult.Response)
 				return &InvokeModelStreamResult{
-					StreamParts: parts,
-					Request:     streamResult.Request,
-					Response:    ResponseMetadataFromAI(streamResult.Response),
+					Result: result,
 				}, nil
 			}
-			parts = append(parts, StreamPartFromAI(part))
+			if isReturnedStreamPart(part) {
+				parts = append(parts, part)
+			}
 			if part.Type == "error" {
 				reason := "provider stream error"
 				if part.Err != nil {
@@ -125,6 +126,22 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 				return nil, err
 			}
 		}
+	}
+}
+
+func isReturnedStreamPart(part ai.StreamPart) bool {
+	switch part.Type {
+	case "text-delta",
+		"reasoning-delta",
+		"tool-input-delta",
+		"tool-input-end",
+		"tool-call",
+		"file",
+		"source",
+		"finish":
+		return true
+	default:
+		return false
 	}
 }
 

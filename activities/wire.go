@@ -298,6 +298,58 @@ func GenerateResultFromAI(result *ai.LanguageModelGenerateResult) *LanguageModel
 	}
 }
 
+func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMetadata, response ai.ResponseMetadata) *LanguageModelGenerateResult {
+	result := &LanguageModelGenerateResult{
+		Request:  request,
+		Response: ResponseMetadataFromAI(response),
+	}
+	var text string
+	var reasoning string
+	toolInputs := map[string]string{}
+	for _, part := range parts {
+		switch part.Type {
+		case "text-delta":
+			text += part.TextDelta
+		case "reasoning-delta":
+			reasoning += part.ReasoningDelta
+		case "tool-input-delta":
+			toolInputs[part.ToolCallID] += part.ToolInputDelta
+		case "tool-input-end":
+			if part.ToolInput != "" {
+				toolInputs[part.ToolCallID] = part.ToolInput
+			}
+		case "tool-call":
+			input := part.ToolInput
+			if input == "" {
+				input = toolInputs[part.ToolCallID]
+			}
+			result.Content = append(result.Content, Part{
+				Type:             "tool-call",
+				ToolCallID:       part.ToolCallID,
+				ToolName:         part.ToolName,
+				InputRaw:         input,
+				ProviderMetadata: part.ProviderMetadata,
+			})
+		case "file", "source":
+			if part.Content != nil {
+				result.Content = append(result.Content, PartFromAI(part.Content))
+			}
+		case "finish":
+			result.FinishReason = part.FinishReason
+			result.Usage = part.Usage
+			result.Warnings = append(result.Warnings, part.Warnings...)
+			result.ProviderMetadata = part.ProviderMetadata
+		}
+	}
+	if text != "" {
+		result.Content = append([]Part{{Type: "text", Text: text}}, result.Content...)
+	}
+	if reasoning != "" {
+		result.Content = append([]Part{{Type: "reasoning", Text: reasoning}}, result.Content...)
+	}
+	return result
+}
+
 func (result LanguageModelGenerateResult) ToAI() ai.LanguageModelGenerateResult {
 	return ai.LanguageModelGenerateResult{
 		Content:          PartsToAI(result.Content),
@@ -384,15 +436,21 @@ func (part StreamPart) ToAI() ai.StreamPart {
 }
 
 func (result InvokeModelStreamResult) ToAI() InvokeModelStreamAIResult {
-	return InvokeModelStreamAIResult{
+	out := InvokeModelStreamAIResult{
 		StreamParts: StreamPartsToAI(result.StreamParts),
 		Request:     result.Request,
 		Response:    result.Response.ToAI(),
 	}
+	if result.Result != nil {
+		generated := result.Result.ToAI()
+		out.Result = &generated
+	}
+	return out
 }
 
 type InvokeModelStreamAIResult struct {
 	StreamParts []ai.StreamPart
 	Request     ai.RequestMetadata
 	Response    ai.ResponseMetadata
+	Result      *ai.LanguageModelGenerateResult
 }

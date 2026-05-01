@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/holbrookab/go-ai/packages/ai"
 )
@@ -20,6 +21,12 @@ type Relay struct {
 	snapshotEveryChunks    int
 	snapshotEveryChars     int
 	persistEphemeralChunks bool
+	liveQueue              chan livePublish
+	liveOnce               sync.Once
+	liveCloseOnce          sync.Once
+	liveWG                 sync.WaitGroup
+	liveErrMu              sync.Mutex
+	liveErr                error
 }
 
 type attemptState struct {
@@ -28,6 +35,11 @@ type attemptState struct {
 	text                   strings.Builder
 	lastSnapshotSequence   int
 	lastSnapshotTextLength int
+}
+
+type livePublish struct {
+	ctx   context.Context
+	chunk LiveChunk
 }
 
 func NewRelay(connector Connector, options Options) *Relay {
@@ -77,7 +89,7 @@ func (r *Relay) Accept(ctx context.Context, part ai.StreamPart) error {
 		Element:      meta.element,
 		ProviderPart: part,
 	}
-	if err := r.connector.PublishLiveChunk(ctx, chunk); err != nil {
+	if err := r.publishLiveChunk(ctx, chunk); err != nil {
 		return err
 	}
 	if r.snapshotDue(state) {
@@ -106,20 +118,83 @@ func (r *Relay) complete(ctx context.Context, status AttemptStatus, reason strin
 	if r == nil || !r.options.Visible || r.options.StreamID == "" {
 		return nil
 	}
+	if err := r.flushLiveChunks(); err != nil {
+		return err
+	}
 	for _, state := range r.attempts {
 		if err := r.flushSnapshot(ctx, state); err != nil {
 			return err
 		}
 		if err := r.connector.CompleteAttempt(ctx, AttemptCompletion{
-			AttemptRef: state.ref,
-			Sequence:   state.sequence,
-			Status:     status,
-			Reason:     reason,
+			AttemptRef:   state.ref,
+			Sequence:     state.sequence,
+			Status:       status,
+			Reason:       reason,
+			SnapshotText: state.text.String(),
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *Relay) publishLiveChunk(ctx context.Context, chunk LiveChunk) error {
+	if r == nil {
+		return nil
+	}
+	if err := r.livePublishError(); err != nil {
+		return err
+	}
+	r.liveOnce.Do(func() {
+		r.liveQueue = make(chan livePublish, 128)
+		r.liveWG.Add(1)
+		go r.publishLiveChunks()
+	})
+	select {
+	case r.liveQueue <- livePublish{ctx: ctx, chunk: chunk}:
+		return r.livePublishError()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Relay) publishLiveChunks() {
+	defer r.liveWG.Done()
+	for item := range r.liveQueue {
+		if err := r.connector.PublishLiveChunk(item.ctx, item.chunk); err != nil {
+			r.setLivePublishError(err)
+		}
+	}
+}
+
+func (r *Relay) flushLiveChunks() error {
+	if r == nil {
+		return nil
+	}
+	r.liveCloseOnce.Do(func() {
+		if r.liveQueue != nil {
+			close(r.liveQueue)
+		}
+	})
+	r.liveWG.Wait()
+	return r.livePublishError()
+}
+
+func (r *Relay) setLivePublishError(err error) {
+	if err == nil {
+		return
+	}
+	r.liveErrMu.Lock()
+	defer r.liveErrMu.Unlock()
+	if r.liveErr == nil {
+		r.liveErr = err
+	}
+}
+
+func (r *Relay) livePublishError() error {
+	r.liveErrMu.Lock()
+	defer r.liveErrMu.Unlock()
+	return r.liveErr
 }
 
 func (r *Relay) ensureAttempt(ctx context.Context, lane Lane, meta partMeta) (*attemptState, error) {

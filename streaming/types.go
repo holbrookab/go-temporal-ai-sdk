@@ -99,9 +99,11 @@ type EphemeralChunk = LiveChunk
 
 type AttemptCompletion struct {
 	AttemptRef
-	Sequence int           `json:"sequence"`
-	Status   AttemptStatus `json:"status"`
-	Reason   string        `json:"reason,omitempty"`
+	Sequence       int           `json:"sequence"`
+	Status         AttemptStatus `json:"status"`
+	Reason         string        `json:"reason,omitempty"`
+	SnapshotText   string        `json:"snapshotText,omitempty"`
+	SnapshotObject any           `json:"snapshotObject,omitempty"`
 }
 
 type ToolLifecycleInput struct {

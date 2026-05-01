@@ -51,6 +51,31 @@ func TestRelayCreatesToolInputLanePerToolCall(t *testing.T) {
 	}
 }
 
+func TestRelayCompletionCarriesFinalSnapshot(t *testing.T) {
+	connector := &recordingConnector{}
+	relay := NewRelay(connector, Options{
+		Visible:  true,
+		StreamID: "stream-1",
+		Lane:     LaneText,
+	})
+
+	if err := relay.Accept(context.Background(), ai.StreamPart{Type: "text-delta", TextDelta: "hel"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.Accept(context.Background(), ai.StreamPart{Type: "text-delta", TextDelta: "lo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(connector.completions) != 1 {
+		t.Fatalf("completions = %#v", connector.completions)
+	}
+	if connector.completions[0].SnapshotText != "hello" {
+		t.Fatalf("completion snapshot = %#v", connector.completions[0])
+	}
+}
+
 type recordingConnector struct {
 	starts      []AttemptRef
 	live        []LiveChunk
