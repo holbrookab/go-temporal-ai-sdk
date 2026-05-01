@@ -25,6 +25,7 @@ type AgentInput struct {
 	Messages          []activities.Message                `json:"messages,omitempty"`
 	Tools             []activities.ToolDefinition         `json:"tools,omitempty"`
 	ToolChoice        ai.ToolChoice                       `json:"toolChoice,omitempty"`
+	FirstToolChoice   ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
 	MaxSteps          int                                 `json:"maxSteps,omitempty"`
 	ModelOptions      activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
 	Stream            streaming.Options                   `json:"stream,omitempty"`
@@ -87,9 +88,13 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 	for stepNumber := 0; stepNumber < maxSteps; stepNumber++ {
 		callOptions := input.ModelOptions
 		callOptions.Prompt = append([]activities.Message(nil), messages...)
-		callOptions.Tools = activities.ModelToolsFromDefinitions(input.Tools, input.ToolChoice)
-		if input.ToolChoice.Type != "" {
-			callOptions.ToolChoice = input.ToolChoice
+		toolChoice := input.ToolChoice
+		if stepNumber == 0 && input.FirstToolChoice.Type != "" {
+			toolChoice = input.FirstToolChoice
+		}
+		callOptions.Tools = activities.ModelToolsFromDefinitions(input.Tools, toolChoice)
+		if toolChoice.Type != "" {
+			callOptions.ToolChoice = toolChoice
 		} else {
 			callOptions.ToolChoice = ai.AutoToolChoice()
 		}

@@ -113,6 +113,77 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunAgentAppliesFirstToolChoiceOnlyOnFirstStep(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var choices []ai.ToolChoice
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			choices = append(choices, args.Options.ToolChoice)
+			if len(choices) == 1 {
+				return &activities.InvokeModelResult{
+					Content: []activities.Part{{
+						Type:       "tool-call",
+						ToolCallID: "call-1",
+						ToolName:   "extractDocument",
+						Input:      map[string]any{"s3Uri": "s3://bucket/resume.pdf"},
+					}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			}
+			return &activities.InvokeModelResult{
+				Content:      []activities.Part{{Type: "text", Text: "Done"}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+			return &activities.InvokeToolResult{
+				ToolCallID: args.ToolCallID,
+				ToolName:   args.ToolName,
+				Input:      args.Input,
+				Output:     ai.ToolResultOutput{Type: "json", Value: map[string]any{"text": "resume text"}},
+				Result:     map[string]any{"text": "resume text"},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeToolActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, activities.PublishToolLifecycleEventArgs) error { return nil },
+		activity.RegisterOptions{Name: activities.PublishToolLifecycleEventActivity},
+	)
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:         "agent-1",
+		ModelID:         "model-1",
+		Prompt:          "open attached document",
+		FirstToolChoice: ai.ToolChoiceFor("extractDocument"),
+		Tools: []activities.ToolDefinition{{
+			Name:        "extractDocument",
+			Description: "Extract document text",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(choices) != 2 {
+		t.Fatalf("tool choices = %#v", choices)
+	}
+	if choices[0].Type != "tool" || choices[0].ToolName != "extractDocument" {
+		t.Fatalf("first tool choice = %#v", choices[0])
+	}
+	if choices[1].Type != "auto" {
+		t.Fatalf("second tool choice = %#v, want auto", choices[1])
+	}
+}
+
 func testAgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
 	return RunAgent(ctx, input)
 }
