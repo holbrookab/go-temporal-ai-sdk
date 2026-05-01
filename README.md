@@ -11,8 +11,8 @@ visible streams.
 - `activities`: worker-side activities that call real `go-ai` providers.
 - `temporalai`: workflow-safe helpers that schedule those activities.
 - `streaming`: connector contracts for live/replay stream infrastructure.
-- `connectors/appsyncdynamodb`: AppSync Events + DynamoDB connector adapter.
-- `connectors/redisdynamodb`: Redis live transport + DynamoDB replay adapter.
+- `connectors/appsync-dynamodb`: AppSync Events + DynamoDB connector adapter.
+- `connectors/redis-dynamodb`: Redis live transport + DynamoDB replay adapter.
 
 Go Temporal workflows use `workflow.Context`, while `go-ai` uses
 `context.Context`, channels, and goroutines. Because of that, workflow code
@@ -63,6 +63,8 @@ The bundled AppSync/DynamoDB adapter is intentionally generic: applications
 decide how a `streamId` resolves to a live channel and replay attributes.
 
 ```go
+import appsyncdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/appsync-dynamodb"
+
 connector := appsyncdynamodb.New(appsyncdynamodb.Options{
     AWSConfig:          cfg,
     TableName:          "chat-production",
@@ -80,6 +82,8 @@ live frames through Redis. Use `ModePubSub` for low-latency fanout,
 and stream catch-up.
 
 ```go
+import redisdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/redis-dynamodb"
+
 connector := redisdynamodb.New(redisdynamodb.Options{
     AWSConfig: cfg,
     DynamoDB:  dynamodb.NewFromConfig(cfg),
