@@ -5,6 +5,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
+	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -12,6 +13,8 @@ type ActivityOptions struct {
 	Default        workflow.ActivityOptions
 	LanguageModel  workflow.ActivityOptions
 	EmbeddingModel workflow.ActivityOptions
+	Tool           workflow.ActivityOptions
+	Stream         workflow.ActivityOptions
 }
 
 func defaultActivityOptions() workflow.ActivityOptions {
@@ -24,6 +27,14 @@ func languageModelActivityOptions(options ActivityOptions) workflow.ActivityOpti
 
 func embeddingModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
 	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.EmbeddingModel))
+}
+
+func toolActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.Tool))
+}
+
+func streamActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.Stream))
 }
 
 func InvokeModel(ctx workflow.Context, modelID string, options ai.LanguageModelCallOptions, activityOptions ...ActivityOptions) (*ai.LanguageModelGenerateResult, error) {
@@ -79,6 +90,32 @@ func InvokeEmbeddingModel(ctx workflow.Context, modelID string, options ai.Embed
 		return nil, err
 	}
 	return &result, nil
+}
+
+func InvokeTool(ctx workflow.Context, args activities.InvokeToolArgs, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	ctx = workflow.WithActivityOptions(ctx, toolActivityOptions(ao))
+	var result activities.InvokeToolResult
+	err := workflow.ExecuteActivity(ctx, activities.InvokeToolActivity, args).Get(ctx, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func PublishToolLifecycleEvent(ctx workflow.Context, input streaming.ToolLifecycleInput, activityOptions ...ActivityOptions) error {
+	if input.StreamID == "" {
+		return nil
+	}
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	ctx = workflow.WithActivityOptions(ctx, streamActivityOptions(ao))
+	return workflow.ExecuteActivity(ctx, activities.PublishToolLifecycleEventActivity, activities.PublishToolLifecycleEventArgs(input)).Get(ctx, nil)
 }
 
 func mergeActivityOptions(base, override workflow.ActivityOptions) workflow.ActivityOptions {

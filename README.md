@@ -11,6 +11,8 @@ visible streams.
 - `activities`: worker-side activities that call real `go-ai` providers.
 - `temporalai`: workflow-safe helpers that schedule those activities.
 - `streaming`: connector contracts for live/replay stream infrastructure.
+- `connectors/appsyncdynamodb`: AppSync Events + DynamoDB connector adapter.
+- `connectors/redisdynamodb`: Redis live transport + DynamoDB replay adapter.
 
 Go Temporal workflows use `workflow.Context`, while `go-ai` uses
 `context.Context`, channels, and goroutines. Because of that, workflow code
@@ -57,12 +59,47 @@ type Connector interface {
 `Publisher`, which matches the common shape of a replay database plus low-latency
 fanout transport.
 
+The bundled AppSync/DynamoDB adapter is intentionally generic: applications
+decide how a `streamId` resolves to a live channel and replay attributes.
+
+```go
+connector := appsyncdynamodb.New(appsyncdynamodb.Options{
+    AWSConfig:          cfg,
+    TableName:          "chat-production",
+    AppSyncHTTPDomain:  "example.appsync-api.us-west-2.amazonaws.com",
+    Resolver: appsyncdynamodb.NewDynamoDBResolver(appsyncdynamodb.DynamoDBResolverOptions{
+        DynamoDB:  dynamodb.NewFromConfig(cfg),
+        TableName: "chat-production",
+    }),
+})
+```
+
+The Redis/DynamoDB adapter uses the same DynamoDB attempt/replay shape, but sends
+live frames through Redis. Use `ModePubSub` for low-latency fanout,
+`ModeStream` for Redis Streams, or `ModeBoth` when consumers need Pub/Sub speed
+and stream catch-up.
+
+```go
+connector := redisdynamodb.New(redisdynamodb.Options{
+    AWSConfig: cfg,
+    DynamoDB:  dynamodb.NewFromConfig(cfg),
+    Redis: redis.NewUniversalClient(&redis.UniversalOptions{
+        Addrs: []string{"localhost:6379"},
+    }),
+    TableName: "chat-production",
+    Mode:      redisdynamodb.ModeBoth,
+})
+```
+
 ## Worker Registration
 
 ```go
 acts := activities.New(activities.Options{
     ModelProvider:   provider,
     StreamConnector: connector,
+    Tools: map[string]ai.Tool{
+        "lookup": lookupTool,
+    },
 })
 
 temporalai.RegisterActivities(worker, acts)
@@ -91,6 +128,37 @@ stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCal
     },
 })
 ```
+
+## Durable Agents
+
+`temporalai.RunAgent` is a workflow-side agent loop. Each model step is a model
+activity, and each tool call is a tool activity. Tool lifecycle chunks are
+published through the same stream connector used by model streaming.
+
+```go
+result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
+    AgentID:      "researcher",
+    ModelID:      "model-id",
+    Instructions: "Use tools when useful.",
+    Prompt:       "Find the latest durable execution notes.",
+    Tools: activities.ToolDefinitionsFromAI(map[string]ai.Tool{
+        "lookup": lookupTool,
+    }),
+    Stream: streaming.Options{
+        Visible:  true,
+        StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        Lane:     streaming.LaneText,
+    },
+})
+```
+
+The default tool execution mode is parallel. Set
+`ToolExecution: temporalai.ToolExecutionSequential` when a workflow wants strict
+one-at-a-time tool scheduling.
+
+Nested agents can be modeled as child workflows with
+`temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
+on child workflow boundaries rather than every nested step.
 
 ## Development
 

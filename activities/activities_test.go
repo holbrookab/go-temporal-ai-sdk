@@ -56,6 +56,40 @@ func TestInvokeEmbeddingModelDelegatesToProvider(t *testing.T) {
 	}
 }
 
+func TestInvokeToolUsesRegisteredTool(t *testing.T) {
+	acts := New(Options{
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+					"required": []any{"query"},
+				},
+				Execute: func(_ context.Context, call ai.ToolCall, _ ai.ToolExecutionOptions) (any, error) {
+					return "found " + call.Input.(map[string]any)["query"].(string), nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if result.Output.Value != "found temporal" {
+		t.Fatalf("output = %#v", result.Output)
+	}
+}
+
 func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
