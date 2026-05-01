@@ -28,8 +28,8 @@ type InvokeModelStreamArgs struct {
 type InvokeModelStreamResult struct {
 	Result      *LanguageModelGenerateResult `json:"result,omitempty"`
 	StreamParts []StreamPart                 `json:"streamParts,omitempty"`
-	Request     ai.RequestMetadata           `json:"request,omitempty"`
-	Response    ResponseMetadata             `json:"response,omitempty"`
+	Request     *ai.RequestMetadata          `json:"request,omitempty"`
+	Response    *ResponseMetadata            `json:"response,omitempty"`
 }
 
 type InvokeEmbeddingModelArgs struct {

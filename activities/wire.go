@@ -438,8 +438,12 @@ func (part StreamPart) ToAI() ai.StreamPart {
 func (result InvokeModelStreamResult) ToAI() InvokeModelStreamAIResult {
 	out := InvokeModelStreamAIResult{
 		StreamParts: StreamPartsToAI(result.StreamParts),
-		Request:     result.Request,
-		Response:    result.Response.ToAI(),
+	}
+	if result.Request != nil {
+		out.Request = *result.Request
+	}
+	if result.Response != nil {
+		out.Response = result.Response.ToAI()
 	}
 	if result.Result != nil {
 		generated := result.Result.ToAI()
