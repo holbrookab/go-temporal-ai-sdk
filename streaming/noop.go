@@ -23,3 +23,11 @@ func (NoopConnector) CompleteAttempt(context.Context, AttemptCompletion) error {
 func (NoopConnector) PublishToolLifecycleEvent(context.Context, ToolLifecycleInput) error {
 	return nil
 }
+
+func (NoopConnector) PersistToolLifecycleEvent(context.Context, ToolLifecycleInput) error {
+	return nil
+}
+
+func (NoopConnector) PublishLiveToolLifecycleEvent(context.Context, ToolLifecycleInput) error {
+	return nil
+}

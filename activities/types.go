@@ -57,11 +57,18 @@ type ToolDefinition struct {
 }
 
 type InvokeToolArgs struct {
-	ToolCallID string    `json:"toolCallId"`
-	ToolName   string    `json:"toolName"`
-	Input      any       `json:"input,omitempty"`
-	Messages   []Message `json:"messages,omitempty"`
-	Context    any       `json:"context,omitempty"`
+	ToolCallID string               `json:"toolCallId"`
+	ToolName   string               `json:"toolName"`
+	Input      any                  `json:"input,omitempty"`
+	Messages   []Message            `json:"messages,omitempty"`
+	Context    any                  `json:"context,omitempty"`
+	Lifecycle  ToolLifecycleOptions `json:"lifecycle,omitempty"`
+}
+
+type ToolLifecycleOptions struct {
+	StreamID        string         `json:"streamId,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	DurableRequired bool           `json:"durableRequired,omitempty"`
 }
 
 type InvokeToolResult struct {

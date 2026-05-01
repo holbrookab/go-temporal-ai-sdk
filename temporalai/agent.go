@@ -199,7 +199,6 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 		if call.ProviderExecuted {
 			continue
 		}
-		publishToolInput(ctx, input, call, activityOptions...)
 		ao := ActivityOptions{}
 		if len(activityOptions) > 0 {
 			ao = activityOptions[0]
@@ -211,6 +210,7 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 			Input:      call.Input,
 			Messages:   messages,
 			Context:    input.ToolContext,
+			Lifecycle:  toolLifecycleOptions(ctx, input),
 		})
 		pending = append(pending, pendingTool{call: call, future: future})
 	}
@@ -218,82 +218,26 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 	for _, item := range pending {
 		var result activities.InvokeToolResult
 		if err := item.future.Get(ctx, &result); err != nil {
-			publishToolError(ctx, input, item.call, err.Error(), activityOptions...)
 			return nil, err
 		}
-		publishToolOutput(ctx, input, result, activityOptions...)
 		results = append(results, result)
 	}
 	return results, nil
 }
 
 func executeOneAgentTool(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
-	publishToolInput(ctx, input, call, activityOptions...)
 	result, err := InvokeTool(ctx, activities.InvokeToolArgs{
 		ToolCallID: call.ToolCallID,
 		ToolName:   call.ToolName,
 		Input:      call.Input,
 		Messages:   messages,
 		Context:    input.ToolContext,
+		Lifecycle:  toolLifecycleOptions(ctx, input),
 	}, activityOptions...)
 	if err != nil {
-		publishToolError(ctx, input, call, err.Error(), activityOptions...)
 		return nil, err
 	}
-	publishToolOutput(ctx, input, *result, activityOptions...)
 	return result, nil
-}
-
-func publishToolInput(ctx workflow.Context, input AgentInput, call AgentToolCall, activityOptions ...ActivityOptions) {
-	_ = PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-		StreamID:         toolLifecycleStreamID(ctx, input),
-		Event:            streaming.ToolInputAvailable,
-		ToolCallID:       call.ToolCallID,
-		ToolName:         call.ToolName,
-		Input:            call.Input,
-		Dynamic:          call.Dynamic,
-		ProviderExecuted: call.ProviderExecuted,
-		Metadata:         map[string]any{"agentId": input.AgentID},
-	}, activityOptions...)
-}
-
-func publishToolOutput(ctx workflow.Context, input AgentInput, result activities.InvokeToolResult, activityOptions ...ActivityOptions) {
-	event := streaming.ToolOutputAvailable
-	errorText := ""
-	if result.IsError {
-		event = streaming.ToolOutputError
-		if text, ok := result.Output.Value.(string); ok {
-			errorText = text
-		} else {
-			errorText = "tool execution failed"
-		}
-	}
-	_ = PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-		StreamID:         toolLifecycleStreamID(ctx, input),
-		Event:            event,
-		ToolCallID:       result.ToolCallID,
-		ToolName:         result.ToolName,
-		Input:            result.Input,
-		Output:           result.Output,
-		ErrorText:        errorText,
-		Dynamic:          result.Dynamic,
-		ProviderExecuted: result.ProviderExecuted,
-		Preliminary:      result.Preliminary,
-		Metadata:         map[string]any{"agentId": input.AgentID},
-	}, activityOptions...)
-}
-
-func publishToolError(ctx workflow.Context, input AgentInput, call AgentToolCall, errorText string, activityOptions ...ActivityOptions) {
-	_ = PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-		StreamID:   toolLifecycleStreamID(ctx, input),
-		Event:      streaming.ToolOutputError,
-		ToolCallID: call.ToolCallID,
-		ToolName:   call.ToolName,
-		Input:      call.Input,
-		ErrorText:  errorText,
-		Dynamic:    call.Dynamic,
-		Metadata:   map[string]any{"agentId": input.AgentID},
-	}, activityOptions...)
 }
 
 func initialAgentMessages(input AgentInput) []activities.Message {
@@ -346,6 +290,18 @@ func toolLifecycleStreamID(ctx workflow.Context, input AgentInput) string {
 		return ""
 	}
 	return streamID(ctx, input.Stream.StreamID)
+}
+
+func toolLifecycleOptions(ctx workflow.Context, input AgentInput) activities.ToolLifecycleOptions {
+	streamID := toolLifecycleStreamID(ctx, input)
+	if streamID == "" {
+		return activities.ToolLifecycleOptions{}
+	}
+	return activities.ToolLifecycleOptions{
+		StreamID:        streamID,
+		Metadata:        map[string]any{"agentId": input.AgentID},
+		DurableRequired: true,
+	}
 }
 
 func extractToolCalls(parts []activities.Part) []AgentToolCall {

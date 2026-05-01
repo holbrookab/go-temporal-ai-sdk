@@ -7,6 +7,8 @@ type Connector interface {
 	PublishLiveChunk(context.Context, LiveChunk) error
 	UpdateAttemptSnapshot(context.Context, AttemptSnapshot) error
 	CompleteAttempt(context.Context, AttemptCompletion) error
+	PersistToolLifecycleEvent(context.Context, ToolLifecycleInput) error
+	PublishLiveToolLifecycleEvent(context.Context, ToolLifecycleInput) error
 	PublishToolLifecycleEvent(context.Context, ToolLifecycleInput) error
 }
 
@@ -89,13 +91,25 @@ func (c *CompositeConnector) CompleteAttempt(ctx context.Context, completion Att
 }
 
 func (c *CompositeConnector) PublishToolLifecycleEvent(ctx context.Context, input ToolLifecycleInput) error {
+	if err := c.PersistToolLifecycleEvent(ctx, input); err != nil {
+		return err
+	}
+	return c.PublishLiveToolLifecycleEvent(ctx, input)
+}
+
+func (c *CompositeConnector) PersistToolLifecycleEvent(ctx context.Context, input ToolLifecycleInput) error {
 	if c == nil {
 		return nil
 	}
 	if c.store != nil {
-		if err := c.store.PublishToolLifecycleEvent(ctx, input); err != nil {
-			return err
-		}
+		return c.store.PublishToolLifecycleEvent(ctx, input)
+	}
+	return nil
+}
+
+func (c *CompositeConnector) PublishLiveToolLifecycleEvent(ctx context.Context, input ToolLifecycleInput) error {
+	if c == nil {
+		return nil
 	}
 	if c.publisher != nil {
 		return c.publisher.PublishToolLifecycleEvent(ctx, input)

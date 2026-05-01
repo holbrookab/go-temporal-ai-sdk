@@ -90,6 +90,179 @@ func TestInvokeToolUsesRegisteredTool(t *testing.T) {
 	}
 }
 
+func TestInvokeToolPublishesRequiredDurableLifecycle(t *testing.T) {
+	connector := &recordingConnector{}
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				Execute: func(_ context.Context, call ai.ToolCall, _ ai.ToolExecutionOptions) (any, error) {
+					return "found " + call.Input.(map[string]any)["query"].(string), nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle: ToolLifecycleOptions{
+			StreamID:        "stream-1",
+			Metadata:        map[string]any{"agentId": "agent-1"},
+			DurableRequired: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(connector.toolDurable) != 2 {
+		t.Fatalf("durable lifecycle = %#v", connector.toolDurable)
+	}
+	if len(connector.toolLive) != 2 {
+		t.Fatalf("live lifecycle = %#v", connector.toolLive)
+	}
+	if connector.toolDurable[0].Event != streaming.ToolInputAvailable || connector.toolDurable[0].EventID != "tool:call-1:input" {
+		t.Fatalf("input lifecycle = %#v", connector.toolDurable[0])
+	}
+	if connector.toolDurable[1].Event != streaming.ToolOutputAvailable || connector.toolDurable[1].EventID != "tool:call-1:terminal" {
+		t.Fatalf("terminal lifecycle = %#v", connector.toolDurable[1])
+	}
+}
+
+func TestInvokeToolDurableInputFailurePreventsExecution(t *testing.T) {
+	connector := &recordingConnector{
+		toolPersistErrForEvent: map[streaming.ToolLifecycleEvent]error{
+			streaming.ToolInputAvailable: errors.New("durable input failed"),
+		},
+	}
+	var executed bool
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					executed = true
+					return "found", nil
+				},
+			},
+		},
+	})
+
+	_, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err == nil {
+		t.Fatal("expected durable lifecycle error")
+	}
+	if executed {
+		t.Fatal("tool executed after durable input failure")
+	}
+}
+
+func TestInvokeToolDurableTerminalFailureFailsActivity(t *testing.T) {
+	connector := &recordingConnector{
+		toolPersistErrForEvent: map[streaming.ToolLifecycleEvent]error{
+			streaming.ToolOutputAvailable: errors.New("durable terminal failed"),
+		},
+	}
+	var executions int
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					executions++
+					return "found", nil
+				},
+			},
+		},
+	})
+
+	_, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err == nil {
+		t.Fatal("expected durable lifecycle error")
+	}
+	if executions != 1 {
+		t.Fatalf("executions = %d", executions)
+	}
+}
+
+func TestInvokeToolLiveLifecycleFailureIsNonFatal(t *testing.T) {
+	connector := &recordingConnector{toolLiveErr: errors.New("live failed")}
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return "found", nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(connector.toolDurable) != 2 {
+		t.Fatalf("durable lifecycle = %#v", connector.toolDurable)
+	}
+}
+
+func TestInvokeToolPublishesErrorLifecycleResult(t *testing.T) {
+	connector := &recordingConnector{}
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return nil, errors.New("lookup failed")
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(connector.toolDurable) != 2 {
+		t.Fatalf("durable lifecycle = %#v", connector.toolDurable)
+	}
+	terminal := connector.toolDurable[1]
+	if terminal.Event != streaming.ToolOutputError || terminal.ErrorText != "lookup failed" {
+		t.Fatalf("terminal lifecycle = %#v", terminal)
+	}
+}
+
 func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
@@ -230,11 +403,15 @@ func TestInvokeModelStreamDiscardsErroredStream(t *testing.T) {
 }
 
 type recordingConnector struct {
-	starts      []streaming.AttemptRef
-	live        []streaming.LiveChunk
-	snapshots   []streaming.AttemptSnapshot
-	completions []streaming.AttemptCompletion
-	tools       []streaming.ToolLifecycleInput
+	starts                 []streaming.AttemptRef
+	live                   []streaming.LiveChunk
+	snapshots              []streaming.AttemptSnapshot
+	completions            []streaming.AttemptCompletion
+	tools                  []streaming.ToolLifecycleInput
+	toolDurable            []streaming.ToolLifecycleInput
+	toolLive               []streaming.ToolLifecycleInput
+	toolPersistErrForEvent map[streaming.ToolLifecycleEvent]error
+	toolLiveErr            error
 }
 
 func (c *recordingConnector) StartAttempt(_ context.Context, input streaming.AttemptRef) error {
@@ -259,5 +436,23 @@ func (c *recordingConnector) CompleteAttempt(_ context.Context, input streaming.
 
 func (c *recordingConnector) PublishToolLifecycleEvent(_ context.Context, input streaming.ToolLifecycleInput) error {
 	c.tools = append(c.tools, input)
+	return nil
+}
+
+func (c *recordingConnector) PersistToolLifecycleEvent(_ context.Context, input streaming.ToolLifecycleInput) error {
+	if c.toolPersistErrForEvent != nil {
+		if err := c.toolPersistErrForEvent[input.Event]; err != nil {
+			return err
+		}
+	}
+	c.toolDurable = append(c.toolDurable, input)
+	return nil
+}
+
+func (c *recordingConnector) PublishLiveToolLifecycleEvent(_ context.Context, input streaming.ToolLifecycleInput) error {
+	if c.toolLiveErr != nil {
+		return c.toolLiveErr
+	}
+	c.toolLive = append(c.toolLive, input)
 	return nil
 }

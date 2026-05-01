@@ -51,6 +51,8 @@ type Connector interface {
     PublishLiveChunk(context.Context, LiveChunk) error
     UpdateAttemptSnapshot(context.Context, AttemptSnapshot) error
     CompleteAttempt(context.Context, AttemptCompletion) error
+    PersistToolLifecycleEvent(context.Context, ToolLifecycleInput) error
+    PublishLiveToolLifecycleEvent(context.Context, ToolLifecycleInput) error
     PublishToolLifecycleEvent(context.Context, ToolLifecycleInput) error
 }
 ```
@@ -137,7 +139,10 @@ stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCal
 
 `temporalai.RunAgent` is a workflow-side agent loop. Each model step is a model
 activity, and each tool call is a tool activity. Tool lifecycle chunks are
-published through the same stream connector used by model streaming.
+published from inside the tool activity through the same stream connector used
+by model streaming. The durable lifecycle write is part of the activity retry
+envelope; live fanout is attempted after the durable write and does not make the
+activity fail.
 
 ```go
 result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
@@ -163,6 +168,16 @@ one-at-a-time tool scheduling.
 Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
 on child workflow boundaries rather than every nested step.
+
+Tool lifecycle event IDs are stable per tool call: `tool:<toolCallId>:input`
+and `tool:<toolCallId>:terminal`. Bundled durable connectors treat duplicate
+event IDs as idempotent success so activity retries do not create duplicate
+start/end frames.
+
+Non-agent Go activities can opt into the same behavior by wrapping their body
+with `activities.RunWithToolLifecycle`. The activity input still has to provide
+the stream and tool metadata; the SDK will not infer `streamId`, `toolCallId`,
+`toolName`, input, or result mapping from an arbitrary activity signature.
 
 ## Development
 

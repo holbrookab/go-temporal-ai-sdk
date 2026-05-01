@@ -107,6 +107,7 @@ type AttemptCompletion struct {
 }
 
 type ToolLifecycleInput struct {
+	EventID          string             `json:"eventId,omitempty"`
 	StreamID         string             `json:"streamId"`
 	Event            ToolLifecycleEvent `json:"event"`
 	ToolCallID       string             `json:"toolCallId"`

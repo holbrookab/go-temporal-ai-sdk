@@ -44,6 +44,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 
 func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 	chunk := map[string]any{
+		"eventId":          input.EventID,
 		"type":             string(input.Event),
 		"toolCallId":       input.ToolCallID,
 		"toolName":         input.ToolName,
@@ -60,6 +61,13 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 		chunk["errorText"] = input.ErrorText
 	}
 	return cleanChunkMap(chunk)
+}
+
+func toolLifecycleEventID(input streaming.ToolLifecycleInput) string {
+	if input.EventID != "" {
+		return input.EventID
+	}
+	return newEventID()
 }
 
 func chunkID(lane streaming.Lane, toolCallID string, attemptID string) string {

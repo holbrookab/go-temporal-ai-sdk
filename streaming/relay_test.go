@@ -108,3 +108,13 @@ func (c *recordingConnector) PublishToolLifecycleEvent(_ context.Context, input 
 	c.tools = append(c.tools, input)
 	return nil
 }
+
+func (c *recordingConnector) PersistToolLifecycleEvent(_ context.Context, input ToolLifecycleInput) error {
+	c.tools = append(c.tools, input)
+	return nil
+}
+
+func (c *recordingConnector) PublishLiveToolLifecycleEvent(_ context.Context, input ToolLifecycleInput) error {
+	c.tools = append(c.tools, input)
+	return nil
+}

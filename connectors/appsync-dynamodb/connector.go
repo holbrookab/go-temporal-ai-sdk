@@ -114,10 +114,27 @@ func (c *Connector) CompleteAttempt(ctx context.Context, completion streaming.At
 }
 
 func (c *Connector) PublishToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
+	if input.EventID == "" {
+		input.EventID = newEventID()
+	}
+	if err := c.PersistToolLifecycleEvent(ctx, input); err != nil {
+		return err
+	}
+	return c.PublishLiveToolLifecycleEvent(ctx, input)
+}
+
+func (c *Connector) PersistToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
 	if input.StreamID == "" {
 		return nil
 	}
-	return c.publishChunk(ctx, input.StreamID, toolLifecycleChunk(input))
+	return c.persistEvent(ctx, input.StreamID, toolLifecycleEventID(input), toolLifecycleChunk(input))
+}
+
+func (c *Connector) PublishLiveToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
+	if input.StreamID == "" {
+		return nil
+	}
+	return c.publishLiveEvent(ctx, input.StreamID, toolLifecycleEventID(input), toolLifecycleChunk(input))
 }
 
 type attemptUpdate struct {
@@ -268,7 +285,12 @@ func (c *Connector) persistEvent(ctx context.Context, streamID string, eventID s
 	item["durableEventId"] = eventID
 	item["chunk"] = chunk
 	item["expiresAt"] = now.Add(c.options.ttl()).Unix()
-	return c.putItem(ctx, item, "attribute_not_exists(#pk)")
+	err = c.putItem(ctx, item, "attribute_not_exists(#pk)")
+	var conditional *types.ConditionalCheckFailedException
+	if errors.As(err, &conditional) {
+		return nil
+	}
+	return err
 }
 
 func (c *Connector) publishLiveEvent(ctx context.Context, streamID string, eventID string, chunk any) error {

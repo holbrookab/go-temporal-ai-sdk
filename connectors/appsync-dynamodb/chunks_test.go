@@ -31,6 +31,7 @@ func TestLLMStreamChunkMatchesUIDataShape(t *testing.T) {
 
 func TestToolLifecycleChunkMapsError(t *testing.T) {
 	chunk := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		EventID:    "tool:call-1:terminal",
 		Event:      streaming.ToolOutputError,
 		ToolCallID: "call-1",
 		ToolName:   "lookup",
@@ -40,6 +41,9 @@ func TestToolLifecycleChunkMapsError(t *testing.T) {
 		t.Fatalf("type = %#v", chunk["type"])
 	}
 	if chunk["errorText"] != "boom" {
+		t.Fatalf("chunk = %#v", chunk)
+	}
+	if chunk["eventId"] != "tool:call-1:terminal" {
 		t.Fatalf("chunk = %#v", chunk)
 	}
 }
