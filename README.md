@@ -166,10 +166,11 @@ on child workflow boundaries rather than every nested step.
 
 ## Development
 
-This module uses the local sibling `go-ai` checkout:
+Release commits should depend on tagged `go-ai` versions from `go.mod`. For
+local sibling development, use a temporary workspace:
 
-```go
-replace github.com/holbrookab/go-ai => ../go-ai
+```bash
+go work init . ../go-ai
 ```
 
 Run tests with a workspace-local Go cache if the sandbox cannot write to the
@@ -178,3 +179,7 @@ default OS cache:
 ```bash
 GOCACHE=$PWD/.cache/go-build go test ./...
 ```
+
+## License
+
+This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
