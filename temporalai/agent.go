@@ -375,11 +375,49 @@ func toolLifecycleOptions(ctx workflow.Context, input AgentInput) activities.Too
 	if streamID == "" {
 		return activities.ToolLifecycleOptions{}
 	}
+	metadata := map[string]any{"agentId": input.AgentID}
+	for key, value := range toolLifecycleMetadataFromContext(input.ToolContext) {
+		metadata[key] = value
+	}
 	return activities.ToolLifecycleOptions{
 		StreamID:        streamID,
-		Metadata:        map[string]any{"agentId": input.AgentID},
+		Metadata:        metadata,
 		DurableRequired: true,
 	}
+}
+
+func toolLifecycleMetadataFromContext(context any) map[string]any {
+	if context == nil {
+		return nil
+	}
+	var raw map[string]any
+	switch value := context.(type) {
+	case map[string]any:
+		raw = value
+	default:
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		if err := json.Unmarshal(payload, &raw); err != nil {
+			return nil
+		}
+	}
+	metadata := map[string]any{}
+	copyStringMetadata(metadata, raw, "taskId")
+	copyStringMetadata(metadata, raw, "taskTitle")
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func copyStringMetadata(out map[string]any, raw map[string]any, key string) {
+	value, ok := raw[key].(string)
+	if !ok || value == "" {
+		return
+	}
+	out[key] = value
 }
 
 func extractToolCalls(parts []activities.Part) []AgentToolCall {

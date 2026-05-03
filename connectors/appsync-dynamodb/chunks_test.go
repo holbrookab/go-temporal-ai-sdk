@@ -36,6 +36,10 @@ func TestToolLifecycleChunkMapsError(t *testing.T) {
 		ToolCallID: "call-1",
 		ToolName:   "lookup",
 		ErrorText:  "boom",
+		Metadata: map[string]any{
+			"taskId":    "task-1",
+			"taskTitle": "Find records",
+		},
 	})
 	if chunk["type"] != string(streaming.ToolOutputError) {
 		t.Fatalf("type = %#v", chunk["type"])
@@ -45,5 +49,12 @@ func TestToolLifecycleChunkMapsError(t *testing.T) {
 	}
 	if chunk["eventId"] != "tool:call-1:terminal" {
 		t.Fatalf("chunk = %#v", chunk)
+	}
+	metadata, ok := chunk["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %#v", chunk["metadata"])
+	}
+	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" {
+		t.Fatalf("metadata = %#v", metadata)
 	}
 }

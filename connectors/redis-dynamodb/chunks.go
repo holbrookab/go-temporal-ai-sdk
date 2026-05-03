@@ -50,6 +50,7 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 		"toolName":         input.ToolName,
 		"dynamic":          input.Dynamic,
 		"providerExecuted": input.ProviderExecuted,
+		"metadata":         input.Metadata,
 	}
 	switch input.Event {
 	case streaming.ToolInputAvailable:

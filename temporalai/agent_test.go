@@ -16,6 +16,24 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+func TestToolLifecycleMetadataFromContextCopiesTaskFields(t *testing.T) {
+	metadata := toolLifecycleMetadataFromContext(struct {
+		TaskID             string `json:"taskId"`
+		TaskTitle          string `json:"taskTitle"`
+		AssistantMessageID string `json:"assistantMessageId"`
+	}{
+		TaskID:             "task-1",
+		TaskTitle:          "Find records",
+		AssistantMessageID: "message-1",
+	})
+	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if _, ok := metadata["assistantMessageId"]; ok {
+		t.Fatalf("metadata leaked persistence field: %#v", metadata)
+	}
+}
+
 func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
