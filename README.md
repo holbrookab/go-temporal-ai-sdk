@@ -214,6 +214,28 @@ to control how many local attempts happen before the regular-activity fallback;
 If a tool is slow, weakly idempotent, needs an isolated task queue, or needs a
 durable checkpoint immediately after completion, keep it as a regular activity.
 
+Short model calls can also opt into local activity execution. This is useful
+for lightweight routing or classification calls where the latency savings are
+worth holding the workflow task open briefly. Longer reasoning calls and
+visible streaming calls should usually remain regular activities.
+
+```go
+route, err := temporalai.InvokeModel(ctx, "router-model", options, temporalai.ActivityOptions{
+    LanguageModelBoundary: activities.ToolExecutionBoundaryLocalActivity,
+    LocalLanguageModel: workflow.LocalActivityOptions{
+        StartToCloseTimeout: 20 * time.Second,
+        Summary:             "SelectSkill",
+        RetryPolicy: &temporal.RetryPolicy{
+            MaximumAttempts: 1,
+        },
+    },
+})
+```
+
+Invoke helpers set Temporal activity summaries by default, so UI/CLI surfaces
+can show labels such as `go-temporal-ai-sdk.InvokeModel` and
+`go-temporal-ai-sdk.InvokeTool` when the server and UI expose user metadata.
+
 Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
 on child workflow boundaries rather than every nested step.

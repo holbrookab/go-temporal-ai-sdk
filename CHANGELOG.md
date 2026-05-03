@@ -11,6 +11,10 @@
 - Added configurable local-tool timeout fallback. Local tool timeouts default to
   retrying the same tool call as a regular activity; agents can set
   `LocalToolTimeoutFallbackNone` to surface the local timeout instead.
+- Added local language/embedding model invocation options for short routing or
+  classification calls.
+- Added default Temporal activity summaries for model, stream, embedding, tool,
+  and lifecycle invoke helpers.
 - Documented the regular-vs-local activity tradeoff for short idempotent tools
   versus slower or more durable tool work.
 

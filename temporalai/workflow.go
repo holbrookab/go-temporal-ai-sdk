@@ -10,32 +10,56 @@ import (
 )
 
 type ActivityOptions struct {
-	Default        workflow.ActivityOptions
-	LanguageModel  workflow.ActivityOptions
-	EmbeddingModel workflow.ActivityOptions
-	Tool           workflow.ActivityOptions
-	LocalTool      workflow.LocalActivityOptions
-	Stream         workflow.ActivityOptions
+	Default                workflow.ActivityOptions
+	LanguageModel          workflow.ActivityOptions
+	EmbeddingModel         workflow.ActivityOptions
+	Tool                   workflow.ActivityOptions
+	LocalLanguageModel     workflow.LocalActivityOptions
+	LocalEmbeddingModel    workflow.LocalActivityOptions
+	LocalTool              workflow.LocalActivityOptions
+	Stream                 workflow.ActivityOptions
+	LanguageModelBoundary  activities.ToolExecutionBoundary
+	EmbeddingModelBoundary activities.ToolExecutionBoundary
 }
 
-func defaultActivityOptions() workflow.ActivityOptions {
-	return workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute}
+func defaultActivityOptions(summary string) workflow.ActivityOptions {
+	return workflow.ActivityOptions{StartToCloseTimeout: 10 * time.Minute, Summary: summary}
 }
 
 func languageModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
-	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.LanguageModel))
+	return mergeActivityOptions(defaultActivityOptions(activities.InvokeModelActivity), mergeActivityOptions(options.Default, options.LanguageModel))
 }
 
 func embeddingModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
-	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.EmbeddingModel))
+	return mergeActivityOptions(defaultActivityOptions(activities.InvokeEmbeddingModelActivity), mergeActivityOptions(options.Default, options.EmbeddingModel))
 }
 
 func toolActivityOptions(options ActivityOptions) workflow.ActivityOptions {
-	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.Tool))
+	return mergeActivityOptions(defaultActivityOptions(activities.InvokeToolActivity), mergeActivityOptions(options.Default, options.Tool))
+}
+
+func streamModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(activities.InvokeModelStreamActivity), mergeActivityOptions(options.Default, options.LanguageModel))
+}
+
+func defaultLocalLanguageModelActivityOptions() workflow.LocalActivityOptions {
+	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Minute, Summary: activities.InvokeModelActivity}
+}
+
+func localLanguageModelActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
+	return mergeLocalActivityOptions(defaultLocalLanguageModelActivityOptions(), options.LocalLanguageModel)
+}
+
+func defaultLocalEmbeddingModelActivityOptions() workflow.LocalActivityOptions {
+	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Minute, Summary: activities.InvokeEmbeddingModelActivity}
+}
+
+func localEmbeddingModelActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
+	return mergeLocalActivityOptions(defaultLocalEmbeddingModelActivityOptions(), options.LocalEmbeddingModel)
 }
 
 func defaultLocalToolActivityOptions() workflow.LocalActivityOptions {
-	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Second}
+	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Second, Summary: activities.InvokeToolActivity}
 }
 
 func localToolActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
@@ -43,7 +67,7 @@ func localToolActivityOptions(options ActivityOptions) workflow.LocalActivityOpt
 }
 
 func streamActivityOptions(options ActivityOptions) workflow.ActivityOptions {
-	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.Stream))
+	return mergeActivityOptions(defaultActivityOptions(activities.PublishToolLifecycleEventActivity), mergeActivityOptions(options.Default, options.Stream))
 }
 
 func InvokeModel(ctx workflow.Context, modelID string, options ai.LanguageModelCallOptions, activityOptions ...ActivityOptions) (*ai.LanguageModelGenerateResult, error) {
@@ -51,12 +75,19 @@ func InvokeModel(ctx workflow.Context, modelID string, options ai.LanguageModelC
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	ctx = workflow.WithActivityOptions(ctx, languageModelActivityOptions(ao))
 	var wireResult activities.InvokeModelResult
-	err := workflow.ExecuteActivity(ctx, activities.InvokeModelActivity, activities.InvokeModelArgs{
+	args := activities.InvokeModelArgs{
 		ModelID: modelID,
 		Options: activities.LanguageModelCallOptionsFromAI(options),
-	}).Get(ctx, &wireResult)
+	}
+	var err error
+	if ao.LanguageModelBoundary == activities.ToolExecutionBoundaryLocalActivity {
+		ctx = workflow.WithLocalActivityOptions(ctx, localLanguageModelActivityOptions(ao))
+		err = workflow.ExecuteLocalActivity(ctx, activities.InvokeModelActivity, args).Get(ctx, &wireResult)
+	} else {
+		ctx = workflow.WithActivityOptions(ctx, languageModelActivityOptions(ao))
+		err = workflow.ExecuteActivity(ctx, activities.InvokeModelActivity, args).Get(ctx, &wireResult)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +100,7 @@ func InvokeModelStream(ctx workflow.Context, modelID string, options ai.Language
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	ctx = workflow.WithActivityOptions(ctx, languageModelActivityOptions(ao))
+	ctx = workflow.WithActivityOptions(ctx, streamModelActivityOptions(ao))
 	var wireResult activities.InvokeModelStreamResult
 	err := workflow.ExecuteActivity(ctx, activities.InvokeModelStreamActivity, activities.InvokeModelStreamArgs{
 		ModelID: modelID,
@@ -87,14 +118,21 @@ func InvokeEmbeddingModel(ctx workflow.Context, modelID string, options ai.Embed
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	ctx = workflow.WithActivityOptions(ctx, embeddingModelActivityOptions(ao))
 	var result ai.EmbeddingModelResult
-	err := workflow.ExecuteActivity(ctx, activities.InvokeEmbeddingModelActivity, activities.InvokeEmbeddingModelArgs{
+	args := activities.InvokeEmbeddingModelArgs{
 		ModelID:         modelID,
 		Values:          options.Values,
 		ProviderOptions: options.ProviderOptions,
 		Headers:         options.Headers,
-	}).Get(ctx, &result)
+	}
+	var err error
+	if ao.EmbeddingModelBoundary == activities.ToolExecutionBoundaryLocalActivity {
+		ctx = workflow.WithLocalActivityOptions(ctx, localEmbeddingModelActivityOptions(ao))
+		err = workflow.ExecuteLocalActivity(ctx, activities.InvokeEmbeddingModelActivity, args).Get(ctx, &result)
+	} else {
+		ctx = workflow.WithActivityOptions(ctx, embeddingModelActivityOptions(ao))
+		err = workflow.ExecuteActivity(ctx, activities.InvokeEmbeddingModelActivity, args).Get(ctx, &result)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +204,9 @@ func mergeActivityOptions(base, override workflow.ActivityOptions) workflow.Acti
 	}
 	if override.RetryPolicy != nil {
 		out.RetryPolicy = override.RetryPolicy
+	}
+	if override.Summary != "" {
+		out.Summary = override.Summary
 	}
 	return out
 }
