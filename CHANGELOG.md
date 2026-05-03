@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added tool execution boundaries for durable agents. Tools still default to
+  regular Temporal activities, but agents can opt into local tool activities by
+  default or override the boundary per tool.
+- Added `temporalai.ActivityOptions.LocalTool` and
+  `temporalai.InvokeToolLocal` for configuring and invoking local tool
+  activities.
+- Documented the regular-vs-local activity tradeoff for short idempotent tools
+  versus slower or more durable tool work.
+
 ## 0.2.0 - 2026-05-01
 
 - Set the `go-ai` dependency to `v0.2.0` for release publishing.

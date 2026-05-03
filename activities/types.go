@@ -13,6 +13,14 @@ const (
 	PublishToolLifecycleEventActivity = "go-temporal-ai-sdk.PublishToolLifecycleEvent"
 )
 
+type ToolExecutionBoundary string
+
+const (
+	ToolExecutionBoundaryAuto          ToolExecutionBoundary = "auto"
+	ToolExecutionBoundaryActivity      ToolExecutionBoundary = "activity"
+	ToolExecutionBoundaryLocalActivity ToolExecutionBoundary = "local-activity"
+)
+
 type InvokeModelArgs struct {
 	ModelID string                   `json:"modelId"`
 	Options LanguageModelCallOptions `json:"options"`
@@ -42,18 +50,19 @@ type InvokeEmbeddingModelArgs struct {
 type InvokeEmbeddingModelResult = ai.EmbeddingModelResult
 
 type ToolDefinition struct {
-	Name             string              `json:"name"`
-	Title            string              `json:"title,omitempty"`
-	Description      string              `json:"description,omitempty"`
-	InputSchema      any                 `json:"inputSchema,omitempty"`
-	OutputSchema     any                 `json:"outputSchema,omitempty"`
-	InputExamples    []any               `json:"inputExamples,omitempty"`
-	Strict           *bool               `json:"strict,omitempty"`
-	ProviderOptions  ai.ProviderOptions  `json:"providerOptions,omitempty"`
-	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
-	Type             string              `json:"type,omitempty"`
-	ID               string              `json:"id,omitempty"`
-	Args             any                 `json:"args,omitempty"`
+	Name              string                `json:"name"`
+	Title             string                `json:"title,omitempty"`
+	Description       string                `json:"description,omitempty"`
+	InputSchema       any                   `json:"inputSchema,omitempty"`
+	OutputSchema      any                   `json:"outputSchema,omitempty"`
+	InputExamples     []any                 `json:"inputExamples,omitempty"`
+	Strict            *bool                 `json:"strict,omitempty"`
+	ProviderOptions   ai.ProviderOptions    `json:"providerOptions,omitempty"`
+	ProviderMetadata  ai.ProviderMetadata   `json:"providerMetadata,omitempty"`
+	Type              string                `json:"type,omitempty"`
+	ID                string                `json:"id,omitempty"`
+	Args              any                   `json:"args,omitempty"`
+	ExecutionBoundary ToolExecutionBoundary `json:"executionBoundary,omitempty"`
 }
 
 type InvokeToolArgs struct {

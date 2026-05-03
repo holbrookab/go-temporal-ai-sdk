@@ -138,11 +138,12 @@ stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCal
 ## Durable Agents
 
 `temporalai.RunAgent` is a workflow-side agent loop. Each model step is a model
-activity, and each tool call is a tool activity. Tool lifecycle chunks are
-published from inside the tool activity through the same stream connector used
-by model streaming. The durable lifecycle write is part of the activity retry
-envelope; live fanout is attempted after the durable write and does not make the
-activity fail.
+activity. Tool calls default to regular activities, and workflows can opt into
+local tool activities for short idempotent tools by setting an agent default or
+per-tool execution boundary. Tool lifecycle chunks are published from inside the
+tool activity through the same stream connector used by model streaming. The
+durable lifecycle write is part of the activity retry envelope; live fanout is
+attempted after the durable write and does not make the activity fail.
 
 ```go
 result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
@@ -164,6 +165,44 @@ result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
 The default tool execution mode is parallel. Set
 `ToolExecution: temporalai.ToolExecutionSequential` when a workflow wants strict
 one-at-a-time tool scheduling.
+
+Tool execution boundaries are independent from parallel/sequential scheduling.
+The SDK default is `activities.ToolExecutionBoundaryActivity`, which keeps tool
+calls as regular Temporal activities. Use
+`DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity` when an
+agent should run short, idempotent tools as local activities by default, and set
+`ExecutionBoundary: activities.ToolExecutionBoundaryActivity` on individual
+tools that should always use regular activities.
+
+```go
+tools := activities.ToolDefinitionsFromAI(map[string]ai.Tool{
+    "lookup": lookupTool,
+    "convertOfficeDocumentToPdf": convertOfficeTool,
+})
+for i := range tools {
+    if tools[i].Name == "convertOfficeDocumentToPdf" {
+        tools[i].ExecutionBoundary = activities.ToolExecutionBoundaryActivity
+    }
+}
+
+result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
+    AgentID:             "researcher",
+    ModelID:             "model-id",
+    Prompt:              "Review these documents.",
+    Tools:               tools,
+    DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
+}, temporalai.ActivityOptions{
+    LocalTool: workflow.LocalActivityOptions{
+        StartToCloseTimeout: 15 * time.Second,
+    },
+})
+```
+
+Local tool activities skip the task queue, run on the same worker as the
+workflow task, and are intended for short operations where the latency savings
+matter. They are still retried and still need idempotency. If a tool is slow,
+weakly idempotent, needs an isolated task queue, or needs a durable checkpoint
+immediately after completion, keep it as a regular activity.
 
 Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused

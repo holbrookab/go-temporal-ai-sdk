@@ -14,6 +14,7 @@ type ActivityOptions struct {
 	LanguageModel  workflow.ActivityOptions
 	EmbeddingModel workflow.ActivityOptions
 	Tool           workflow.ActivityOptions
+	LocalTool      workflow.LocalActivityOptions
 	Stream         workflow.ActivityOptions
 }
 
@@ -31,6 +32,14 @@ func embeddingModelActivityOptions(options ActivityOptions) workflow.ActivityOpt
 
 func toolActivityOptions(options ActivityOptions) workflow.ActivityOptions {
 	return mergeActivityOptions(defaultActivityOptions(), mergeActivityOptions(options.Default, options.Tool))
+}
+
+func defaultLocalToolActivityOptions() workflow.LocalActivityOptions {
+	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Second}
+}
+
+func localToolActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
+	return mergeLocalActivityOptions(defaultLocalToolActivityOptions(), options.LocalTool)
 }
 
 func streamActivityOptions(options ActivityOptions) workflow.ActivityOptions {
@@ -106,6 +115,20 @@ func InvokeTool(ctx workflow.Context, args activities.InvokeToolArgs, activityOp
 	return &result, nil
 }
 
+func InvokeToolLocal(ctx workflow.Context, args activities.InvokeToolArgs, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	ctx = workflow.WithLocalActivityOptions(ctx, localToolActivityOptions(ao))
+	var result activities.InvokeToolResult
+	err := workflow.ExecuteLocalActivity(ctx, activities.InvokeToolActivity, args).Get(ctx, &result)
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func PublishToolLifecycleEvent(ctx workflow.Context, input streaming.ToolLifecycleInput, activityOptions ...ActivityOptions) error {
 	if input.StreamID == "" {
 		return nil
@@ -143,6 +166,23 @@ func mergeActivityOptions(base, override workflow.ActivityOptions) workflow.Acti
 	}
 	if override.RetryPolicy != nil {
 		out.RetryPolicy = override.RetryPolicy
+	}
+	return out
+}
+
+func mergeLocalActivityOptions(base, override workflow.LocalActivityOptions) workflow.LocalActivityOptions {
+	out := base
+	if override.ScheduleToCloseTimeout != 0 {
+		out.ScheduleToCloseTimeout = override.ScheduleToCloseTimeout
+	}
+	if override.StartToCloseTimeout != 0 {
+		out.StartToCloseTimeout = override.StartToCloseTimeout
+	}
+	if override.RetryPolicy != nil {
+		out.RetryPolicy = override.RetryPolicy
+	}
+	if override.Summary != "" {
+		out.Summary = override.Summary
 	}
 	return out
 }

@@ -18,20 +18,21 @@ const (
 )
 
 type AgentInput struct {
-	AgentID           string                              `json:"agentId,omitempty"`
-	ModelID           string                              `json:"modelId"`
-	Instructions      string                              `json:"instructions,omitempty"`
-	Prompt            string                              `json:"prompt,omitempty"`
-	Messages          []activities.Message                `json:"messages,omitempty"`
-	Tools             []activities.ToolDefinition         `json:"tools,omitempty"`
-	ToolChoice        ai.ToolChoice                       `json:"toolChoice,omitempty"`
-	FirstToolChoice   ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
-	MaxSteps          int                                 `json:"maxSteps,omitempty"`
-	ModelOptions      activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
-	Stream            streaming.Options                   `json:"stream,omitempty"`
-	UseStreamingModel bool                                `json:"useStreamingModel,omitempty"`
-	ToolContext       any                                 `json:"toolContext,omitempty"`
-	ToolExecution     string                              `json:"toolExecution,omitempty"`
+	AgentID             string                              `json:"agentId,omitempty"`
+	ModelID             string                              `json:"modelId"`
+	Instructions        string                              `json:"instructions,omitempty"`
+	Prompt              string                              `json:"prompt,omitempty"`
+	Messages            []activities.Message                `json:"messages,omitempty"`
+	Tools               []activities.ToolDefinition         `json:"tools,omitempty"`
+	ToolChoice          ai.ToolChoice                       `json:"toolChoice,omitempty"`
+	FirstToolChoice     ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
+	MaxSteps            int                                 `json:"maxSteps,omitempty"`
+	ModelOptions        activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
+	Stream              streaming.Options                   `json:"stream,omitempty"`
+	UseStreamingModel   bool                                `json:"useStreamingModel,omitempty"`
+	ToolContext         any                                 `json:"toolContext,omitempty"`
+	ToolExecution       string                              `json:"toolExecution,omitempty"`
+	DefaultToolBoundary activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
 }
 
 type AgentResult struct {
@@ -203,15 +204,7 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 		if len(activityOptions) > 0 {
 			ao = activityOptions[0]
 		}
-		toolCtx := workflow.WithActivityOptions(ctx, toolActivityOptions(ao))
-		future := workflow.ExecuteActivity(toolCtx, activities.InvokeToolActivity, activities.InvokeToolArgs{
-			ToolCallID: call.ToolCallID,
-			ToolName:   call.ToolName,
-			Input:      call.Input,
-			Messages:   messages,
-			Context:    input.ToolContext,
-			Lifecycle:  toolLifecycleOptions(ctx, input),
-		})
+		future := executeAgentToolFuture(ctx, input, messages, call, ao)
 		pending = append(pending, pendingTool{call: call, future: future})
 	}
 	results := make([]activities.InvokeToolResult, 0, len(pending))
@@ -226,18 +219,50 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 }
 
 func executeOneAgentTool(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
-	result, err := InvokeTool(ctx, activities.InvokeToolArgs{
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	var result activities.InvokeToolResult
+	if err := executeAgentToolFuture(ctx, input, messages, call, ao).Get(ctx, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions) workflow.Future {
+	args := activities.InvokeToolArgs{
 		ToolCallID: call.ToolCallID,
 		ToolName:   call.ToolName,
 		Input:      call.Input,
 		Messages:   messages,
 		Context:    input.ToolContext,
 		Lifecycle:  toolLifecycleOptions(ctx, input),
-	}, activityOptions...)
-	if err != nil {
-		return nil, err
 	}
-	return result, nil
+	switch toolExecutionBoundary(input, call.ToolName) {
+	case activities.ToolExecutionBoundaryLocalActivity:
+		toolCtx := workflow.WithLocalActivityOptions(ctx, localToolActivityOptions(options))
+		return workflow.ExecuteLocalActivity(toolCtx, activities.InvokeToolActivity, args)
+	default:
+		toolCtx := workflow.WithActivityOptions(ctx, toolActivityOptions(options))
+		return workflow.ExecuteActivity(toolCtx, activities.InvokeToolActivity, args)
+	}
+}
+
+func toolExecutionBoundary(input AgentInput, toolName string) activities.ToolExecutionBoundary {
+	for _, tool := range input.Tools {
+		if tool.Name != toolName {
+			continue
+		}
+		if tool.ExecutionBoundary != "" && tool.ExecutionBoundary != activities.ToolExecutionBoundaryAuto {
+			return tool.ExecutionBoundary
+		}
+		break
+	}
+	if input.DefaultToolBoundary != "" && input.DefaultToolBoundary != activities.ToolExecutionBoundaryAuto {
+		return input.DefaultToolBoundary
+	}
+	return activities.ToolExecutionBoundaryActivity
 }
 
 func initialAgentMessages(input AgentInput) []activities.Message {
