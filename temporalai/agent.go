@@ -7,6 +7,7 @@ import (
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -15,24 +16,30 @@ const (
 
 	ToolExecutionParallel   = "parallel"
 	ToolExecutionSequential = "sequential"
+
+	LocalToolTimeoutFallbackActivity LocalToolTimeoutFallback = "activity"
+	LocalToolTimeoutFallbackNone     LocalToolTimeoutFallback = "none"
 )
 
+type LocalToolTimeoutFallback string
+
 type AgentInput struct {
-	AgentID             string                              `json:"agentId,omitempty"`
-	ModelID             string                              `json:"modelId"`
-	Instructions        string                              `json:"instructions,omitempty"`
-	Prompt              string                              `json:"prompt,omitempty"`
-	Messages            []activities.Message                `json:"messages,omitempty"`
-	Tools               []activities.ToolDefinition         `json:"tools,omitempty"`
-	ToolChoice          ai.ToolChoice                       `json:"toolChoice,omitempty"`
-	FirstToolChoice     ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
-	MaxSteps            int                                 `json:"maxSteps,omitempty"`
-	ModelOptions        activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
-	Stream              streaming.Options                   `json:"stream,omitempty"`
-	UseStreamingModel   bool                                `json:"useStreamingModel,omitempty"`
-	ToolContext         any                                 `json:"toolContext,omitempty"`
-	ToolExecution       string                              `json:"toolExecution,omitempty"`
-	DefaultToolBoundary activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
+	AgentID                  string                              `json:"agentId,omitempty"`
+	ModelID                  string                              `json:"modelId"`
+	Instructions             string                              `json:"instructions,omitempty"`
+	Prompt                   string                              `json:"prompt,omitempty"`
+	Messages                 []activities.Message                `json:"messages,omitempty"`
+	Tools                    []activities.ToolDefinition         `json:"tools,omitempty"`
+	ToolChoice               ai.ToolChoice                       `json:"toolChoice,omitempty"`
+	FirstToolChoice          ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
+	MaxSteps                 int                                 `json:"maxSteps,omitempty"`
+	ModelOptions             activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
+	Stream                   streaming.Options                   `json:"stream,omitempty"`
+	UseStreamingModel        bool                                `json:"useStreamingModel,omitempty"`
+	ToolContext              any                                 `json:"toolContext,omitempty"`
+	ToolExecution            string                              `json:"toolExecution,omitempty"`
+	DefaultToolBoundary      activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
+	LocalToolTimeoutFallback LocalToolTimeoutFallback            `json:"localToolTimeoutFallback,omitempty"`
 }
 
 type AgentResult struct {
@@ -192,8 +199,9 @@ func executeAgentToolsSequential(ctx workflow.Context, input AgentInput, message
 
 func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	type pendingTool struct {
-		call   AgentToolCall
-		future workflow.Future
+		call     AgentToolCall
+		future   workflow.Future
+		boundary activities.ToolExecutionBoundary
 	}
 	pending := make([]pendingTool, 0, len(calls))
 	for _, call := range calls {
@@ -204,16 +212,16 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 		if len(activityOptions) > 0 {
 			ao = activityOptions[0]
 		}
-		future := executeAgentToolFuture(ctx, input, messages, call, ao)
-		pending = append(pending, pendingTool{call: call, future: future})
+		future, boundary := executeAgentToolFuture(ctx, input, messages, call, ao)
+		pending = append(pending, pendingTool{call: call, future: future, boundary: boundary})
 	}
 	results := make([]activities.InvokeToolResult, 0, len(pending))
 	for _, item := range pending {
-		var result activities.InvokeToolResult
-		if err := item.future.Get(ctx, &result); err != nil {
+		result, err := agentToolResultFromFuture(ctx, input, messages, item.call, aoFromActivityOptions(activityOptions...), item.future, item.boundary)
+		if err != nil {
 			return nil, err
 		}
-		results = append(results, result)
+		results = append(results, *result)
 	}
 	return results, nil
 }
@@ -223,14 +231,11 @@ func executeOneAgentTool(ctx workflow.Context, input AgentInput, messages []acti
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	var result activities.InvokeToolResult
-	if err := executeAgentToolFuture(ctx, input, messages, call, ao).Get(ctx, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	future, boundary := executeAgentToolFuture(ctx, input, messages, call, ao)
+	return agentToolResultFromFuture(ctx, input, messages, call, ao, future, boundary)
 }
 
-func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions) workflow.Future {
+func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions) (workflow.Future, activities.ToolExecutionBoundary) {
 	args := activities.InvokeToolArgs{
 		ToolCallID: call.ToolCallID,
 		ToolName:   call.ToolName,
@@ -239,14 +244,62 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 		Context:    input.ToolContext,
 		Lifecycle:  toolLifecycleOptions(ctx, input),
 	}
-	switch toolExecutionBoundary(input, call.ToolName) {
+	boundary := toolExecutionBoundary(input, call.ToolName)
+	switch boundary {
 	case activities.ToolExecutionBoundaryLocalActivity:
 		toolCtx := workflow.WithLocalActivityOptions(ctx, localToolActivityOptions(options))
-		return workflow.ExecuteLocalActivity(toolCtx, activities.InvokeToolActivity, args)
+		return workflow.ExecuteLocalActivity(toolCtx, activities.InvokeToolActivity, args), boundary
 	default:
-		toolCtx := workflow.WithActivityOptions(ctx, toolActivityOptions(options))
-		return workflow.ExecuteActivity(toolCtx, activities.InvokeToolActivity, args)
+		return executeAgentToolActivityFuture(ctx, args, options), boundary
 	}
+}
+
+func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions, future workflow.Future, boundary activities.ToolExecutionBoundary) (*activities.InvokeToolResult, error) {
+	var result activities.InvokeToolResult
+	if err := future.Get(ctx, &result); err != nil {
+		if shouldFallbackLocalToolTimeout(input, boundary, err) {
+			args := activities.InvokeToolArgs{
+				ToolCallID: call.ToolCallID,
+				ToolName:   call.ToolName,
+				Input:      call.Input,
+				Messages:   messages,
+				Context:    input.ToolContext,
+				Lifecycle:  toolLifecycleOptions(ctx, input),
+			}
+			var fallbackResult activities.InvokeToolResult
+			if fallbackErr := executeAgentToolActivityFuture(ctx, args, options).Get(ctx, &fallbackResult); fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			return &fallbackResult, nil
+		}
+		return nil, err
+	}
+	return &result, nil
+}
+
+func executeAgentToolActivityFuture(ctx workflow.Context, args activities.InvokeToolArgs, options ActivityOptions) workflow.Future {
+	toolCtx := workflow.WithActivityOptions(ctx, toolActivityOptions(options))
+	return workflow.ExecuteActivity(toolCtx, activities.InvokeToolActivity, args)
+}
+
+func shouldFallbackLocalToolTimeout(input AgentInput, boundary activities.ToolExecutionBoundary, err error) bool {
+	return boundary == activities.ToolExecutionBoundaryLocalActivity &&
+		localToolTimeoutFallback(input) == LocalToolTimeoutFallbackActivity &&
+		temporal.IsTimeoutError(err)
+}
+
+func localToolTimeoutFallback(input AgentInput) LocalToolTimeoutFallback {
+	if input.LocalToolTimeoutFallback == "" {
+		return LocalToolTimeoutFallbackActivity
+	}
+	return input.LocalToolTimeoutFallback
+}
+
+func aoFromActivityOptions(activityOptions ...ActivityOptions) ActivityOptions {
+	if len(activityOptions) > 0 {
+		return activityOptions[0]
+	}
+	return ActivityOptions{}
 }
 
 func toolExecutionBoundary(input AgentInput, toolName string) activities.ToolExecutionBoundary {

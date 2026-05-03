@@ -3,12 +3,15 @@ package temporalai
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 )
@@ -327,6 +330,143 @@ func TestRunAgentMixedParallelToolBoundariesPreserveResultOrder(t *testing.T) {
 	}
 }
 
+func TestRunAgentFallsBackToActivityAfterLocalToolTimeout(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var localToolStarts int
+	var regularToolStarts int
+	var toolExecutions int
+
+	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
+		if info.ActivityType.Name == activities.InvokeToolActivity {
+			localToolStarts++
+		}
+	})
+	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == activities.InvokeToolActivity {
+			regularToolStarts++
+		}
+	})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			return &activities.InvokeModelResult{
+				Content: []activities.Part{{
+					Type:       "tool-call",
+					ToolCallID: "call-1",
+					ToolName:   "lookup",
+					Input:      map[string]any{"query": "temporal"},
+				}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+			toolExecutions++
+			if toolExecutions == 1 {
+				return nil, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
+			}
+			return &activities.InvokeToolResult{
+				ToolCallID: args.ToolCallID,
+				ToolName:   args.ToolName,
+				Input:      args.Input,
+				Output:     ai.ToolResultOutput{Type: "text", Value: "lookup output"},
+				Result:     "lookup output",
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeToolActivity},
+	)
+
+	env.ExecuteWorkflow(testAgentWorkflowWithOneLocalToolAttempt, AgentInput{
+		AgentID:             "agent-1",
+		ModelID:             "model-1",
+		Prompt:              "run lookup",
+		MaxSteps:            1,
+		DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
+		Tools: []activities.ToolDefinition{{
+			Name:        "lookup",
+			Description: "Look something up",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if localToolStarts != 1 {
+		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
+	}
+	if regularToolStarts != 1 {
+		t.Fatalf("regular tool starts = %d, want 1", regularToolStarts)
+	}
+}
+
+func TestRunAgentCanDisableLocalToolTimeoutFallback(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var localToolStarts int
+	var regularToolStarts int
+
+	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
+		if info.ActivityType.Name == activities.InvokeToolActivity {
+			localToolStarts++
+		}
+	})
+	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == activities.InvokeToolActivity {
+			regularToolStarts++
+		}
+	})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			return &activities.InvokeModelResult{
+				Content: []activities.Part{{
+					Type:       "tool-call",
+					ToolCallID: "call-1",
+					ToolName:   "lookup",
+					Input:      map[string]any{"query": "temporal"},
+				}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+			return nil, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
+		},
+		activity.RegisterOptions{Name: activities.InvokeToolActivity},
+	)
+
+	env.ExecuteWorkflow(testAgentWorkflowWithOneLocalToolAttempt, AgentInput{
+		AgentID:                  "agent-1",
+		ModelID:                  "model-1",
+		Prompt:                   "run lookup",
+		DefaultToolBoundary:      activities.ToolExecutionBoundaryLocalActivity,
+		LocalToolTimeoutFallback: LocalToolTimeoutFallbackNone,
+		Tools: []activities.ToolDefinition{{
+			Name:        "lookup",
+			Description: "Look something up",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatal("workflow error is nil, want local timeout")
+	}
+	if localToolStarts != 1 {
+		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
+	}
+	if regularToolStarts != 0 {
+		t.Fatalf("regular tool starts = %d, want 0", regularToolStarts)
+	}
+}
+
 func registerOneToolAgentActivities(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 	t.Helper()
 	var modelCalls int
@@ -367,4 +507,15 @@ func registerOneToolAgentActivities(t *testing.T, env *testsuite.TestWorkflowEnv
 
 func testAgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
 	return RunAgent(ctx, input)
+}
+
+func testAgentWorkflowWithOneLocalToolAttempt(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
+	return RunAgent(ctx, input, ActivityOptions{
+		LocalTool: workflow.LocalActivityOptions{
+			StartToCloseTimeout: time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				MaximumAttempts: 1,
+			},
+		},
+	})
 }

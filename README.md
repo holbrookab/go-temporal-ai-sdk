@@ -186,23 +186,33 @@ for i := range tools {
 }
 
 result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
-    AgentID:             "researcher",
-    ModelID:             "model-id",
-    Prompt:              "Review these documents.",
-    Tools:               tools,
-    DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
+    AgentID:                  "researcher",
+    ModelID:                  "model-id",
+    Prompt:                   "Review these documents.",
+    Tools:                    tools,
+    DefaultToolBoundary:      activities.ToolExecutionBoundaryLocalActivity,
+    LocalToolTimeoutFallback: temporalai.LocalToolTimeoutFallbackActivity,
 }, temporalai.ActivityOptions{
     LocalTool: workflow.LocalActivityOptions{
         StartToCloseTimeout: 15 * time.Second,
+        RetryPolicy: &temporal.RetryPolicy{
+            MaximumAttempts: 1,
+        },
     },
 })
 ```
 
 Local tool activities skip the task queue, run on the same worker as the
 workflow task, and are intended for short operations where the latency savings
-matter. They are still retried and still need idempotency. If a tool is slow,
-weakly idempotent, needs an isolated task queue, or needs a durable checkpoint
-immediately after completion, keep it as a regular activity.
+matter. They are still retried and still need idempotency. When a local tool
+times out, agents retry that same tool call as a regular activity by default.
+Set `LocalToolTimeoutFallback: temporalai.LocalToolTimeoutFallbackNone` to
+disable that fallback. Set `ActivityOptions.LocalTool.RetryPolicy` when you want
+to control how many local attempts happen before the regular-activity fallback;
+`MaximumAttempts: 1` makes the first local timeout switch immediately.
+
+If a tool is slow, weakly idempotent, needs an isolated task queue, or needs a
+durable checkpoint immediately after completion, keep it as a regular activity.
 
 Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
