@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.39
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.3
-	github.com/holbrookab/go-ai v0.2.0
+	github.com/holbrookab/go-ai v0.2.1
 	github.com/redis/go-redis/v9 v9.19.0
 	go.temporal.io/sdk v1.42.0
 )

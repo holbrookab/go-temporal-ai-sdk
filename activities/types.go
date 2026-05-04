@@ -62,22 +62,31 @@ type ToolDefinition struct {
 	Type              string                `json:"type,omitempty"`
 	ID                string                `json:"id,omitempty"`
 	Args              any                   `json:"args,omitempty"`
+	RequiresApproval  bool                  `json:"requiresApproval,omitempty"`
 	ExecutionBoundary ToolExecutionBoundary `json:"executionBoundary,omitempty"`
 }
 
 type InvokeToolArgs struct {
-	ToolCallID string               `json:"toolCallId"`
-	ToolName   string               `json:"toolName"`
-	Input      any                  `json:"input,omitempty"`
-	Messages   []Message            `json:"messages,omitempty"`
-	Context    any                  `json:"context,omitempty"`
-	Lifecycle  ToolLifecycleOptions `json:"lifecycle,omitempty"`
+	ToolCallID             string               `json:"toolCallId"`
+	ToolName               string               `json:"toolName"`
+	Input                  any                  `json:"input,omitempty"`
+	Messages               []Message            `json:"messages,omitempty"`
+	Context                any                  `json:"context,omitempty"`
+	Lifecycle              ToolLifecycleOptions `json:"lifecycle,omitempty"`
+	Approval               *ToolApprovalState   `json:"approval,omitempty"`
+	SuppressInputLifecycle bool                 `json:"suppressInputLifecycle,omitempty"`
 }
 
 type ToolLifecycleOptions struct {
 	StreamID        string         `json:"streamId,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	DurableRequired bool           `json:"durableRequired,omitempty"`
+}
+
+type ToolApprovalState struct {
+	ApprovalID string `json:"approvalId,omitempty"`
+	Approved   *bool  `json:"approved,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 type InvokeToolResult struct {

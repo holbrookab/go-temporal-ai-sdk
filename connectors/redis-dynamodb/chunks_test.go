@@ -59,6 +59,30 @@ func TestToolLifecycleChunkMapsOutput(t *testing.T) {
 	}
 }
 
+func TestToolLifecycleChunkMapsApproval(t *testing.T) {
+	approved := false
+	response := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		EventID:    "tool:call-1:approval-response",
+		Event:      streaming.ToolApprovalResponse,
+		ToolCallID: "call-1",
+		ToolName:   "create_worker",
+		ApprovalID: "approval-1",
+		Approved:   &approved,
+		Reason:     "needs correction",
+		Metadata:   map[string]any{"taskId": "task-1"},
+	})
+	if response["type"] != string(streaming.ToolApprovalResponse) || response["approvalId"] != "approval-1" {
+		t.Fatalf("response = %#v", response)
+	}
+	if response["approved"] != &approved || response["reason"] != "needs correction" {
+		t.Fatalf("response = %#v", response)
+	}
+	metadata, ok := response["metadata"].(map[string]any)
+	if !ok || metadata["taskId"] != "task-1" {
+		t.Fatalf("metadata = %#v", response["metadata"])
+	}
+}
+
 func TestDefaultResolveBuildsRedisKeys(t *testing.T) {
 	c := New(Options{})
 	ref, err := c.resolve(nil, "stream-1")

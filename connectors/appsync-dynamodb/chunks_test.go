@@ -58,3 +58,39 @@ func TestToolLifecycleChunkMapsError(t *testing.T) {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 }
+
+func TestToolLifecycleChunkMapsApproval(t *testing.T) {
+	approved := true
+	automatic := true
+	request := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		EventID:     "tool:call-1:approval-request",
+		Event:       streaming.ToolApprovalRequest,
+		ToolCallID:  "call-1",
+		ToolName:    "create_worker",
+		ApprovalID:  "approval-1",
+		IsAutomatic: &automatic,
+		Metadata:    map[string]any{"taskId": "task-1"},
+	})
+	if request["type"] != string(streaming.ToolApprovalRequest) || request["approvalId"] != "approval-1" {
+		t.Fatalf("request = %#v", request)
+	}
+	if request["isAutomatic"] != &automatic {
+		t.Fatalf("request = %#v", request)
+	}
+
+	response := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		EventID:    "tool:call-1:approval-response",
+		Event:      streaming.ToolApprovalResponse,
+		ToolCallID: "call-1",
+		ToolName:   "create_worker",
+		ApprovalID: "approval-1",
+		Approved:   &approved,
+		Reason:     "looks good",
+	})
+	if response["type"] != string(streaming.ToolApprovalResponse) || response["approvalId"] != "approval-1" {
+		t.Fatalf("response = %#v", response)
+	}
+	if response["approved"] != &approved || response["reason"] != "looks good" {
+		t.Fatalf("response = %#v", response)
+	}
+}

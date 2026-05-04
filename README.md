@@ -214,6 +214,40 @@ to control how many local attempts happen before the regular-activity fallback;
 If a tool is slow, weakly idempotent, needs an isolated task queue, or needs a
 durable checkpoint immediately after completion, keep it as a regular activity.
 
+Approval-required tools can be marked before they reach the agent loop:
+
+```go
+tools := activities.ToolDefinitionsFromAI(map[string]ai.Tool{
+    "create_worker": createWorkerTool,
+})
+for i := range tools {
+    if tools[i].Name == "create_worker" {
+        tools[i].RequiresApproval = true
+    }
+}
+
+result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
+    AgentID: "worker-admin",
+    ModelID: "model-id",
+    Prompt:  "Create the worker if the extracted details look right.",
+    Tools:   tools,
+    Stream: streaming.Options{
+        Visible:  true,
+        StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        Lane:     streaming.LaneText,
+    },
+})
+```
+
+When an approval-required tool is called, the workflow publishes AI SDK-shaped
+`tool-input-available` and `tool-approval-request` chunks, waits for a Temporal
+signal named by `temporalai.ToolApprovalResponseSignalName(approvalID)`, then
+publishes `tool-approval-response`. Approved tools receive the approval state in
+their activity input; denied or timed-out approvals publish `tool-output-denied`
+and do not schedule the tool activity. Plan previews and richer feedback UI
+should be represented as assistant text or `data-*` UI chunks; the SDK approval
+path is the durable gate before executing a concrete tool call.
+
 Short model calls can also opt into local activity execution. This is useful
 for lightweight routing or classification calls where the latency savings are
 worth holding the workflow task open briefly. Longer reasoning calls and
@@ -240,10 +274,11 @@ Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
 on child workflow boundaries rather than every nested step.
 
-Tool lifecycle event IDs are stable per tool call: `tool:<toolCallId>:input`
-and `tool:<toolCallId>:terminal`. Bundled durable connectors treat duplicate
-event IDs as idempotent success so activity retries do not create duplicate
-start/end frames.
+Tool lifecycle event IDs are stable per tool call: `tool:<toolCallId>:input`,
+`tool:<toolCallId>:approval-request`,
+`tool:<toolCallId>:approval-response`, and `tool:<toolCallId>:terminal`.
+Bundled durable connectors treat duplicate event IDs as idempotent success so
+activity retries do not create duplicate start/end frames.
 
 Non-agent Go activities can opt into the same behavior by wrapping their body
 with `activities.RunWithToolLifecycle`. The activity input still has to provide

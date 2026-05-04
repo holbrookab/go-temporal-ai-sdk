@@ -124,6 +124,163 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunAgentRequestsApprovalBeforeApprovalRequiredTool(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var lifecycle []streaming.ToolLifecycleInput
+	var toolArgs activities.InvokeToolArgs
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			return &activities.InvokeModelResult{
+				Content: []activities.Part{{
+					Type:       "tool-call",
+					ToolCallID: "call-1",
+					ToolName:   "create_worker",
+					Input:      map[string]any{"name": "Ada"},
+				}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+			toolArgs = args
+			return &activities.InvokeToolResult{
+				ToolCallID: args.ToolCallID,
+				ToolName:   args.ToolName,
+				Input:      args.Input,
+				Output:     ai.ToolResultOutput{Type: "text", Value: "created"},
+				Result:     "created",
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeToolActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.PublishToolLifecycleEventArgs) error {
+			lifecycle = append(lifecycle, streaming.ToolLifecycleInput(args))
+			return nil
+		},
+		activity.RegisterOptions{Name: activities.PublishToolLifecycleEventActivity},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(ToolApprovalResponseSignalName("call-1:approval"), ToolApprovalResponse{
+			ApprovalID: "call-1:approval",
+			Approved:   true,
+			Reason:     "approved by user",
+		})
+	}, time.Second)
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:  "agent-1",
+		ModelID:  "model-1",
+		Prompt:   "create worker",
+		MaxSteps: 1,
+		Stream:   streaming.Options{StreamID: "stream-1"},
+		Tools: []activities.ToolDefinition{{
+			Name:             "create_worker",
+			InputSchema:      map[string]any{"type": "object"},
+			RequiresApproval: true,
+		}},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if toolArgs.Approval == nil || toolArgs.Approval.Approved == nil || !*toolArgs.Approval.Approved {
+		t.Fatalf("tool approval args = %#v", toolArgs.Approval)
+	}
+	if !toolArgs.SuppressInputLifecycle {
+		t.Fatalf("expected input lifecycle to be suppressed after workflow published it")
+	}
+	if len(lifecycle) < 3 {
+		t.Fatalf("lifecycle = %#v", lifecycle)
+	}
+	if lifecycle[0].Event != streaming.ToolInputAvailable ||
+		lifecycle[1].Event != streaming.ToolApprovalRequest ||
+		lifecycle[2].Event != streaming.ToolApprovalResponse {
+		t.Fatalf("lifecycle = %#v", lifecycle)
+	}
+}
+
+func TestRunAgentDeniesApprovalRequiredToolWhenUserDenies(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var lifecycle []streaming.ToolLifecycleInput
+	var toolStarts int
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			return &activities.InvokeModelResult{
+				Content: []activities.Part{{
+					Type:       "tool-call",
+					ToolCallID: "call-1",
+					ToolName:   "create_worker",
+					Input:      map[string]any{"name": "Ada"},
+				}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+			}, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+			toolStarts++
+			return nil, nil
+		},
+		activity.RegisterOptions{Name: activities.InvokeToolActivity},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.PublishToolLifecycleEventArgs) error {
+			lifecycle = append(lifecycle, streaming.ToolLifecycleInput(args))
+			return nil
+		},
+		activity.RegisterOptions{Name: activities.PublishToolLifecycleEventActivity},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(ToolApprovalResponseSignalName("call-1:approval"), ToolApprovalResponse{
+			ApprovalID: "call-1:approval",
+			Approved:   false,
+			Reason:     "not yet",
+		})
+	}, time.Second)
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:  "agent-1",
+		ModelID:  "model-1",
+		Prompt:   "create worker",
+		MaxSteps: 1,
+		Stream:   streaming.Options{StreamID: "stream-1"},
+		Tools: []activities.ToolDefinition{{
+			Name:             "create_worker",
+			InputSchema:      map[string]any{"type": "object"},
+			RequiresApproval: true,
+		}},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if toolStarts != 0 {
+		t.Fatalf("tool starts = %d", toolStarts)
+	}
+	var result AgentResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Steps[0].ToolResults[0].Output; got.Type != "execution-denied" || got.Reason != "not yet" {
+		t.Fatalf("tool result = %#v", got)
+	}
+	if lifecycle[len(lifecycle)-1].Event != streaming.ToolOutputDenied {
+		t.Fatalf("lifecycle = %#v", lifecycle)
+	}
+}
+
 func TestRunAgentAppliesFirstToolChoiceOnlyOnFirstStep(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

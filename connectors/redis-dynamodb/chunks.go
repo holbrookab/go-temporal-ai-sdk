@@ -48,6 +48,7 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 		"type":             string(input.Event),
 		"toolCallId":       input.ToolCallID,
 		"toolName":         input.ToolName,
+		"approvalId":       input.ApprovalID,
 		"dynamic":          input.Dynamic,
 		"providerExecuted": input.ProviderExecuted,
 		"metadata":         input.Metadata,
@@ -55,11 +56,17 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 	switch input.Event {
 	case streaming.ToolInputAvailable:
 		chunk["input"] = input.Input
+	case streaming.ToolApprovalRequest:
+		chunk["isAutomatic"] = input.IsAutomatic
+	case streaming.ToolApprovalResponse:
+		chunk["approved"] = input.Approved
+		chunk["reason"] = input.Reason
 	case streaming.ToolOutputAvailable:
 		chunk["output"] = input.Output
 		chunk["preliminary"] = input.Preliminary
 	case streaming.ToolOutputError:
 		chunk["errorText"] = input.ErrorText
+	case streaming.ToolOutputDenied:
 	}
 	return cleanChunkMap(chunk)
 }

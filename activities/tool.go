@@ -42,6 +42,7 @@ func ToolDefinitionFromAI(name string, tool ai.Tool) ToolDefinition {
 		Type:             tool.Type,
 		ID:               tool.ID,
 		Args:             tool.Args,
+		RequiresApproval: tool.RequiresApproval,
 	}
 }
 
@@ -91,6 +92,7 @@ func (definition ToolDefinition) ToAI() ai.Tool {
 		Type:             definition.Type,
 		ID:               definition.ID,
 		Args:             definition.Args,
+		RequiresApproval: definition.RequiresApproval,
 	}
 }
 
@@ -124,8 +126,10 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 	if ok {
 		metadata = tool.ProviderMetadata
 	}
-	if err := a.publishToolLifecycleInput(ctx, args, dynamic); err != nil {
-		return nil, err
+	if !args.SuppressInputLifecycle {
+		if err := a.publishToolLifecycleInput(ctx, args, dynamic); err != nil {
+			return nil, err
+		}
 	}
 	if !ok {
 		return a.finishToolLifecycle(ctx, args, toolErrorResult(args, fmt.Errorf("tool %q is not registered", args.ToolName), nil))
@@ -140,21 +144,17 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 	if err := ai.ValidateToolInput(tool, args.Input); err != nil {
 		return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata))
 	}
-	if tool.NeedsApproval != nil {
-		decision, err := tool.NeedsApproval(ctx, call)
+	if args.Approval != nil {
+		if args.Approval.Approved == nil || !*args.Approval.Approved {
+			return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, args.Approval.Reason))
+		}
+	} else if tool.RequiresApproval || tool.NeedsApproval != nil {
+		decision, err := ai.ResolveToolApproval(ctx, map[string]ai.Tool{args.ToolName: tool}, call)
 		if err != nil {
 			return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata))
 		}
-		if decision.Type == "denied" || decision.Type == "user-approval" {
-			return a.finishToolLifecycle(ctx, args, &InvokeToolResult{
-				ToolCallID:       args.ToolCallID,
-				ToolName:         args.ToolName,
-				Input:            args.Input,
-				Output:           ai.ToolResultOutput{Type: "execution-denied", Reason: decision.Reason},
-				IsError:          decision.Type == "denied",
-				Dynamic:          call.Dynamic,
-				ProviderMetadata: call.ProviderMetadata,
-			})
+		if ai.ApprovalBlocksToolExecution(decision) {
+			return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, decision.Reason))
 		}
 	}
 	if tool.Execute == nil {
@@ -188,6 +188,17 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 		Dynamic:          call.Dynamic,
 		ProviderMetadata: call.ProviderMetadata,
 	})
+}
+
+func deniedToolResult(args InvokeToolArgs, call ai.ToolCall, reason string) *InvokeToolResult {
+	return &InvokeToolResult{
+		ToolCallID:       args.ToolCallID,
+		ToolName:         args.ToolName,
+		Input:            args.Input,
+		Output:           ai.ToolResultOutput{Type: "execution-denied", Reason: reason},
+		Dynamic:          call.Dynamic,
+		ProviderMetadata: call.ProviderMetadata,
+	}
 }
 
 func toolErrorResult(args InvokeToolArgs, err error, metadata ai.ProviderMetadata) *InvokeToolResult {
@@ -266,6 +277,9 @@ func toolLifecycleInput(args InvokeToolArgs, event streaming.ToolLifecycleEvent)
 }
 
 func toolLifecycleEventForResult(result *InvokeToolResult) streaming.ToolLifecycleEvent {
+	if result != nil && result.Output.Type == "execution-denied" {
+		return streaming.ToolOutputDenied
+	}
 	if result != nil && result.IsError {
 		return streaming.ToolOutputError
 	}

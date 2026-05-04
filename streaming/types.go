@@ -53,9 +53,12 @@ const (
 type ToolLifecycleEvent string
 
 const (
-	ToolInputAvailable  ToolLifecycleEvent = "tool-input-available"
-	ToolOutputAvailable ToolLifecycleEvent = "tool-output-available"
-	ToolOutputError     ToolLifecycleEvent = "tool-output-error"
+	ToolInputAvailable   ToolLifecycleEvent = "tool-input-available"
+	ToolApprovalRequest  ToolLifecycleEvent = "tool-approval-request"
+	ToolApprovalResponse ToolLifecycleEvent = "tool-approval-response"
+	ToolOutputAvailable  ToolLifecycleEvent = "tool-output-available"
+	ToolOutputError      ToolLifecycleEvent = "tool-output-error"
+	ToolOutputDenied     ToolLifecycleEvent = "tool-output-denied"
 )
 
 type Options struct {
@@ -112,6 +115,10 @@ type ToolLifecycleInput struct {
 	Event            ToolLifecycleEvent `json:"event"`
 	ToolCallID       string             `json:"toolCallId"`
 	ToolName         string             `json:"toolName"`
+	ApprovalID       string             `json:"approvalId,omitempty"`
+	Approved         *bool              `json:"approved,omitempty"`
+	Reason           string             `json:"reason,omitempty"`
+	IsAutomatic      *bool              `json:"isAutomatic,omitempty"`
 	Input            any                `json:"input,omitempty"`
 	Output           any                `json:"output,omitempty"`
 	ErrorText        string             `json:"errorText,omitempty"`

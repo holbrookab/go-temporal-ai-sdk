@@ -90,6 +90,16 @@ func TestInvokeToolUsesRegisteredTool(t *testing.T) {
 	}
 }
 
+func TestToolDefinitionPreservesRequiresApproval(t *testing.T) {
+	definition := ToolDefinitionFromAI("write", ai.Tool{RequiresApproval: true})
+	if !definition.RequiresApproval {
+		t.Fatalf("requires approval was not copied: %#v", definition)
+	}
+	if !definition.ToAI().RequiresApproval {
+		t.Fatalf("requires approval was not restored to AI tool")
+	}
+}
+
 func TestInvokeToolPublishesRequiredDurableLifecycle(t *testing.T) {
 	connector := &recordingConnector{}
 	acts := New(Options{
@@ -130,6 +140,76 @@ func TestInvokeToolPublishesRequiredDurableLifecycle(t *testing.T) {
 	}
 	if connector.toolDurable[1].Event != streaming.ToolOutputAvailable || connector.toolDurable[1].EventID != "tool:call-1:terminal" {
 		t.Fatalf("terminal lifecycle = %#v", connector.toolDurable[1])
+	}
+}
+
+func TestInvokeToolRequiresApprovalWithoutDecisionDeniesExecution(t *testing.T) {
+	connector := &recordingConnector{}
+	executed := false
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"write": {
+				RequiresApproval: true,
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					executed = true
+					return "written", nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "write",
+		Input:      map[string]any{"id": "1"},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Fatal("tool executed without approval")
+	}
+	if result.Output.Type != "execution-denied" {
+		t.Fatalf("result = %#v", result)
+	}
+	if connector.toolDurable[1].Event != streaming.ToolOutputDenied {
+		t.Fatalf("terminal lifecycle = %#v", connector.toolDurable)
+	}
+}
+
+func TestInvokeToolApprovedDecisionExecutesAndCanSuppressInputLifecycle(t *testing.T) {
+	connector := &recordingConnector{}
+	approved := true
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"write": {
+				RequiresApproval: true,
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return "written", nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID:             "call-1",
+		ToolName:               "write",
+		Input:                  map[string]any{"id": "1"},
+		Lifecycle:              ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+		Approval:               &ToolApprovalState{ApprovalID: "approval-1", Approved: &approved},
+		SuppressInputLifecycle: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output.Value != "written" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(connector.toolDurable) != 1 || connector.toolDurable[0].Event != streaming.ToolOutputAvailable {
+		t.Fatalf("durable lifecycle = %#v", connector.toolDurable)
 	}
 }
 

@@ -38,6 +38,7 @@ type AgentInput struct {
 	UseStreamingModel        bool                                `json:"useStreamingModel,omitempty"`
 	ToolContext              any                                 `json:"toolContext,omitempty"`
 	ToolExecution            string                              `json:"toolExecution,omitempty"`
+	ToolApproval             AgentToolApprovalOptions            `json:"toolApproval,omitempty"`
 	DefaultToolBoundary      activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
 	LocalToolTimeoutFallback LocalToolTimeoutFallback            `json:"localToolTimeoutFallback,omitempty"`
 }
@@ -198,30 +199,35 @@ func executeAgentToolsSequential(ctx workflow.Context, input AgentInput, message
 }
 
 func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
-	type pendingTool struct {
-		call     AgentToolCall
-		future   workflow.Future
-		boundary activities.ToolExecutionBoundary
+	type toolOutcome struct {
+		index  int
+		result *activities.InvokeToolResult
+		err    error
 	}
-	pending := make([]pendingTool, 0, len(calls))
+	count := 0
+	outcomes := workflow.NewChannel(ctx)
 	for _, call := range calls {
 		if call.ProviderExecuted {
 			continue
 		}
-		ao := ActivityOptions{}
-		if len(activityOptions) > 0 {
-			ao = activityOptions[0]
-		}
-		future, boundary := executeAgentToolFuture(ctx, input, messages, call, ao)
-		pending = append(pending, pendingTool{call: call, future: future, boundary: boundary})
+		index := count
+		toolCall := call
+		count++
+		workflow.Go(ctx, func(ctx workflow.Context) {
+			result, err := executeOneAgentTool(ctx, input, messages, toolCall, activityOptions...)
+			outcomes.Send(ctx, toolOutcome{index: index, result: result, err: err})
+		})
 	}
-	results := make([]activities.InvokeToolResult, 0, len(pending))
-	for _, item := range pending {
-		result, err := agentToolResultFromFuture(ctx, input, messages, item.call, aoFromActivityOptions(activityOptions...), item.future, item.boundary)
-		if err != nil {
-			return nil, err
+	results := make([]activities.InvokeToolResult, count)
+	for i := 0; i < count; i++ {
+		var outcome toolOutcome
+		outcomes.Receive(ctx, &outcome)
+		if outcome.err != nil {
+			return nil, outcome.err
 		}
-		results = append(results, *result)
+		if outcome.result != nil {
+			results[outcome.index] = *outcome.result
+		}
 	}
 	return results, nil
 }
@@ -231,18 +237,27 @@ func executeOneAgentTool(ctx workflow.Context, input AgentInput, messages []acti
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	future, boundary := executeAgentToolFuture(ctx, input, messages, call, ao)
-	return agentToolResultFromFuture(ctx, input, messages, call, ao, future, boundary)
+	approval, inputPublished, deniedResult, err := approveAgentToolIfRequired(ctx, input, call, ao)
+	if err != nil {
+		return nil, err
+	}
+	if deniedResult != nil {
+		return deniedResult, nil
+	}
+	future, boundary := executeAgentToolFuture(ctx, input, messages, call, approval, inputPublished, ao)
+	return agentToolResultFromFuture(ctx, input, messages, call, ao, future, boundary, approval, inputPublished)
 }
 
-func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions) (workflow.Future, activities.ToolExecutionBoundary) {
+func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, approval *activities.ToolApprovalState, suppressInputLifecycle bool, options ActivityOptions) (workflow.Future, activities.ToolExecutionBoundary) {
 	args := activities.InvokeToolArgs{
-		ToolCallID: call.ToolCallID,
-		ToolName:   call.ToolName,
-		Input:      call.Input,
-		Messages:   messages,
-		Context:    input.ToolContext,
-		Lifecycle:  toolLifecycleOptions(ctx, input),
+		ToolCallID:             call.ToolCallID,
+		ToolName:               call.ToolName,
+		Input:                  call.Input,
+		Messages:               messages,
+		Context:                input.ToolContext,
+		Lifecycle:              toolLifecycleOptions(ctx, input),
+		Approval:               approval,
+		SuppressInputLifecycle: suppressInputLifecycle,
 	}
 	boundary := toolExecutionBoundary(input, call.ToolName)
 	switch boundary {
@@ -254,17 +269,19 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 	}
 }
 
-func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions, future workflow.Future, boundary activities.ToolExecutionBoundary) (*activities.InvokeToolResult, error) {
+func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions, future workflow.Future, boundary activities.ToolExecutionBoundary, approval *activities.ToolApprovalState, suppressInputLifecycle bool) (*activities.InvokeToolResult, error) {
 	var result activities.InvokeToolResult
 	if err := future.Get(ctx, &result); err != nil {
 		if shouldFallbackLocalToolTimeout(input, boundary, err) {
 			args := activities.InvokeToolArgs{
-				ToolCallID: call.ToolCallID,
-				ToolName:   call.ToolName,
-				Input:      call.Input,
-				Messages:   messages,
-				Context:    input.ToolContext,
-				Lifecycle:  toolLifecycleOptions(ctx, input),
+				ToolCallID:             call.ToolCallID,
+				ToolName:               call.ToolName,
+				Input:                  call.Input,
+				Messages:               messages,
+				Context:                input.ToolContext,
+				Lifecycle:              toolLifecycleOptions(ctx, input),
+				Approval:               approval,
+				SuppressInputLifecycle: suppressInputLifecycle,
 			}
 			var fallbackResult activities.InvokeToolResult
 			if fallbackErr := executeAgentToolActivityFuture(ctx, args, options).Get(ctx, &fallbackResult); fallbackErr != nil {
@@ -286,6 +303,98 @@ func shouldFallbackLocalToolTimeout(input AgentInput, boundary activities.ToolEx
 	return boundary == activities.ToolExecutionBoundaryLocalActivity &&
 		localToolTimeoutFallback(input) == LocalToolTimeoutFallbackActivity &&
 		temporal.IsTimeoutError(err)
+}
+
+func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call AgentToolCall, options ActivityOptions) (*activities.ToolApprovalState, bool, *activities.InvokeToolResult, error) {
+	definition, ok := agentToolDefinition(input, call.ToolName)
+	if !ok || !definition.RequiresApproval {
+		return nil, false, nil, nil
+	}
+	lifecycle := toolLifecycleOptions(ctx, input)
+	metadata := mergeApprovalMetadata(lifecycle.Metadata, input.ToolApproval.Metadata)
+	inputPublished := false
+	if lifecycle.StreamID != "" {
+		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
+			EventID:    toolApprovalEventID(call.ToolCallID, "input"),
+			StreamID:   lifecycle.StreamID,
+			Event:      streaming.ToolInputAvailable,
+			ToolCallID: call.ToolCallID,
+			ToolName:   call.ToolName,
+			Input:      call.Input,
+			Dynamic:    call.Dynamic,
+			Metadata:   metadata,
+		}, options); err != nil {
+			return nil, false, nil, err
+		}
+		inputPublished = true
+	}
+	approvalID := fmt.Sprintf("%s:approval", call.ToolCallID)
+	response, err := RequestToolApproval(ctx, ToolApprovalRequest{
+		StreamID:        lifecycle.StreamID,
+		ApprovalID:      approvalID,
+		ToolCallID:      call.ToolCallID,
+		ToolName:        call.ToolName,
+		Input:           call.Input,
+		Metadata:        metadata,
+		DurableRequired: lifecycle.DurableRequired,
+		Timeout:         input.ToolApproval.Timeout,
+		SignalName:      input.ToolApproval.SignalName,
+	}, options)
+	if err != nil {
+		return nil, inputPublished, nil, err
+	}
+	approval := toolApprovalState(response)
+	if response.Approved {
+		return approval, inputPublished, nil, nil
+	}
+	result := deniedAgentToolResult(call, response.Reason)
+	if lifecycle.StreamID != "" {
+		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
+			EventID:    toolApprovalEventID(call.ToolCallID, "terminal"),
+			StreamID:   lifecycle.StreamID,
+			Event:      streaming.ToolOutputDenied,
+			ToolCallID: call.ToolCallID,
+			ToolName:   call.ToolName,
+			Metadata:   metadata,
+		}, options); err != nil {
+			return nil, inputPublished, nil, err
+		}
+	}
+	return approval, inputPublished, result, nil
+}
+
+func deniedAgentToolResult(call AgentToolCall, reason string) *activities.InvokeToolResult {
+	return &activities.InvokeToolResult{
+		ToolCallID:       call.ToolCallID,
+		ToolName:         call.ToolName,
+		Input:            call.Input,
+		Output:           ai.ToolResultOutput{Type: "execution-denied", Reason: reason},
+		Dynamic:          call.Dynamic,
+		ProviderMetadata: call.ProviderMetadata,
+	}
+}
+
+func agentToolDefinition(input AgentInput, toolName string) (activities.ToolDefinition, bool) {
+	for _, tool := range input.Tools {
+		if tool.Name == toolName {
+			return tool, true
+		}
+	}
+	return activities.ToolDefinition{}, false
+}
+
+func mergeApprovalMetadata(base map[string]any, extra map[string]any) map[string]any {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
 }
 
 func localToolTimeoutFallback(input AgentInput) LocalToolTimeoutFallback {
