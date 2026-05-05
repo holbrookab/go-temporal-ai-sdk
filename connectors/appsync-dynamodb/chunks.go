@@ -1,6 +1,16 @@
 package appsyncdynamodb
 
-import "github.com/holbrookab/go-temporal-ai-sdk/streaming"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+)
+
+const (
+	maxStreamChunkValueBytes  = 24_000
+	maxStreamChunkStringBytes = 24_000
+)
 
 func llmStreamChunk(event streaming.Event, input any) map[string]any {
 	data := map[string]any{"event": event}
@@ -17,8 +27,8 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["toolName"] = value.ToolName
 		data["sequence"] = value.Sequence
 		data["delta"] = value.Delta
-		data["input"] = value.Input
-		data["element"] = value.Element
+		data["input"] = compactStreamValue(value.Input)
+		data["element"] = compactStreamValue(value.Element)
 		addScopeFields(data, value.Scope)
 	case streaming.AttemptCompletion:
 		id = chunkID(value.Lane, value.ToolCallID, value.AttemptID)
@@ -33,7 +43,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["status"] = value.Status
 		data["reason"] = value.Reason
 		data["snapshotText"] = value.SnapshotText
-		data["snapshotObject"] = value.SnapshotObject
+		data["snapshotObject"] = compactStreamValue(value.SnapshotObject)
 		addScopeFields(data, value.Scope)
 	}
 	return map[string]any{
@@ -59,20 +69,74 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 	addScopeFields(chunk, input.Scope)
 	switch input.Event {
 	case streaming.ToolInputAvailable:
-		chunk["input"] = input.Input
+		chunk["input"] = compactStreamValue(input.Input)
 	case streaming.ToolApprovalRequest:
 		chunk["isAutomatic"] = input.IsAutomatic
 	case streaming.ToolApprovalResponse:
 		chunk["approved"] = input.Approved
 		chunk["reason"] = input.Reason
 	case streaming.ToolOutputAvailable:
-		chunk["output"] = input.Output
+		chunk["output"] = compactStreamValue(input.Output)
 		chunk["preliminary"] = input.Preliminary
 	case streaming.ToolOutputError:
-		chunk["errorText"] = input.ErrorText
+		chunk["errorText"] = compactStreamStringValue(input.ErrorText)
 	case streaming.ToolOutputDenied:
 	}
 	return cleanChunkMap(chunk)
+}
+
+func compactStreamValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	if text, ok := value.(string); ok {
+		return truncateStringBytes(text, maxStreamChunkStringBytes)
+	}
+	originalBytes := jsonByteLength(value)
+	if originalBytes <= maxStreamChunkValueBytes {
+		return value
+	}
+	return map[string]any{
+		"truncated":     true,
+		"originalBytes": originalBytes,
+		"preview":       truncateStringBytes(jsonString(value), maxStreamChunkValueBytes),
+	}
+}
+
+func compactStreamStringValue(value any) any {
+	text, ok := value.(string)
+	if !ok {
+		return value
+	}
+	return truncateStringBytes(text, maxStreamChunkStringBytes)
+}
+
+func truncateStringBytes(value string, maxBytes int) string {
+	if len([]byte(value)) <= maxBytes {
+		return value
+	}
+	suffix := "\n\n[truncated for streaming]"
+	limit := maxBytes - len([]byte(suffix))
+	if limit < 0 {
+		limit = 0
+	}
+	bytes := []byte(value)
+	if limit > len(bytes) {
+		limit = len(bytes)
+	}
+	return string(bytes[:limit]) + suffix
+}
+
+func jsonByteLength(value any) int {
+	return len([]byte(jsonString(value)))
+}
+
+func jsonString(value any) string {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(bytes)
 }
 
 func addScopeFields(data map[string]any, scope streaming.Scope) {

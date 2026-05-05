@@ -1,6 +1,7 @@
 package appsyncdynamodb
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
@@ -37,6 +38,24 @@ func TestLLMStreamChunkMatchesUIDataShape(t *testing.T) {
 	}
 	if data["displayMode"] != "task" || data["taskId"] != "task-1" || data["stepId"] != "step-0" || data["stepNumber"] == nil || data["stepType"] != "initial" {
 		t.Fatalf("scope data = %#v", data)
+	}
+}
+
+func TestToolLifecycleChunkCompactsLargeOutput(t *testing.T) {
+	chunk := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		Event:      streaming.ToolOutputAvailable,
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Output: map[string]any{
+			"value": strings.Repeat("x", maxStreamChunkValueBytes+1000),
+		},
+	})
+	output, ok := chunk["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v", chunk["output"])
+	}
+	if output["truncated"] != true || output["preview"] == "" {
+		t.Fatalf("output = %#v", output)
 	}
 }
 

@@ -163,7 +163,7 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 	output, err := tool.Execute(ctx, call, ai.ToolExecutionOptions{
 		ToolCallID: args.ToolCallID,
 		Messages:   MessagesToAI(args.Messages),
-		Context:    args.Context,
+		Context:    contextWithScope(args.Context, args.Lifecycle.Scope),
 	})
 	isError := err != nil
 	modelOutputInput := output
@@ -188,6 +188,64 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 		Dynamic:          call.Dynamic,
 		ProviderMetadata: call.ProviderMetadata,
 	})
+}
+
+func contextWithScope(contextValue any, scope streaming.Scope) any {
+	if scope.DisplayMode == "" &&
+		scope.AgentID == "" &&
+		scope.TaskID == "" &&
+		scope.TaskTitle == "" &&
+		scope.SkillName == "" &&
+		scope.StepID == "" &&
+		scope.StepNumber == nil &&
+		scope.StepType == "" {
+		return contextValue
+	}
+
+	merged := map[string]any{}
+	switch value := contextValue.(type) {
+	case nil:
+	case map[string]any:
+		for key, inner := range value {
+			merged[key] = inner
+		}
+	case map[string]string:
+		for key, inner := range value {
+			merged[key] = inner
+		}
+	default:
+		bytes, err := json.Marshal(value)
+		if err != nil {
+			return contextValue
+		}
+		_ = json.Unmarshal(bytes, &merged)
+	}
+
+	if scope.DisplayMode != "" {
+		merged["displayMode"] = string(scope.DisplayMode)
+	}
+	if scope.AgentID != "" {
+		merged["agentId"] = scope.AgentID
+	}
+	if scope.TaskID != "" {
+		merged["taskId"] = scope.TaskID
+	}
+	if scope.TaskTitle != "" {
+		merged["taskTitle"] = scope.TaskTitle
+	}
+	if scope.SkillName != "" {
+		merged["skillName"] = scope.SkillName
+	}
+	if scope.StepID != "" {
+		merged["stepId"] = scope.StepID
+	}
+	if scope.StepNumber != nil {
+		merged["stepNumber"] = *scope.StepNumber
+	}
+	if scope.StepType != "" {
+		merged["stepType"] = scope.StepType
+	}
+	return merged
 }
 
 func deniedToolResult(args InvokeToolArgs, call ai.ToolCall, reason string) *InvokeToolResult {

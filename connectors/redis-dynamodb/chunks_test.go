@@ -1,6 +1,7 @@
 package redisdynamodb
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
@@ -56,6 +57,24 @@ func TestToolLifecycleChunkMapsOutput(t *testing.T) {
 	}
 	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestToolLifecycleChunkCompactsLargeOutput(t *testing.T) {
+	chunk := toolLifecycleChunk(streaming.ToolLifecycleInput{
+		Event:      streaming.ToolOutputAvailable,
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Output: map[string]any{
+			"value": strings.Repeat("x", maxStreamChunkValueBytes+1000),
+		},
+	})
+	output, ok := chunk["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v", chunk["output"])
+	}
+	if output["truncated"] != true || output["preview"] == "" {
+		t.Fatalf("output = %#v", output)
 	}
 }
 

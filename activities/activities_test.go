@@ -91,6 +91,56 @@ func TestInvokeToolUsesRegisteredTool(t *testing.T) {
 	}
 }
 
+func TestInvokeToolAddsLifecycleScopeToExecutionContext(t *testing.T) {
+	var seen map[string]any
+	stepNumber := 2
+	acts := New(Options{
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				InputSchema: map[string]any{"type": "object"},
+				Execute: func(_ context.Context, _ ai.ToolCall, opts ai.ToolExecutionOptions) (any, error) {
+					var ok bool
+					seen, ok = opts.Context.(map[string]any)
+					if !ok {
+						t.Fatalf("context = %T", opts.Context)
+					}
+					return "ok", nil
+				},
+			},
+		},
+	})
+
+	_, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{},
+		Context:    map[string]any{"assistantMessageId": "msg-1"},
+		Lifecycle: ToolLifecycleOptions{
+			Scope: streaming.Scope{
+				DisplayMode: streaming.DisplayModeTask,
+				AgentID:     "agent-1",
+				TaskID:      "task-1",
+				TaskTitle:   "Verify license",
+				SkillName:   "License validation",
+				StepID:      "step-2",
+				StepNumber:  &stepNumber,
+				StepType:    "tool-result",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen["assistantMessageId"] != "msg-1" ||
+		seen["taskId"] != "task-1" ||
+		seen["skillName"] != "License validation" ||
+		seen["stepId"] != "step-2" ||
+		seen["stepNumber"] != stepNumber ||
+		seen["stepType"] != "tool-result" {
+		t.Fatalf("scoped context = %#v", seen)
+	}
+}
+
 func TestToolDefinitionPreservesRequiresApproval(t *testing.T) {
 	definition := ToolDefinitionFromAI("write", ai.Tool{RequiresApproval: true})
 	if !definition.RequiresApproval {
