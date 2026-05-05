@@ -293,6 +293,10 @@ func (a *Activities) publishToolLifecycleInput(ctx context.Context, args InvokeT
 }
 
 func (a *Activities) finishToolLifecycle(ctx context.Context, args InvokeToolArgs, result *InvokeToolResult) (*InvokeToolResult, error) {
+	result, err := compactToolArtifacts(ctx, a.artifacts, args, result)
+	if err != nil {
+		return nil, err
+	}
 	input, ok := toolLifecycleInput(args, toolLifecycleEventForResult(result))
 	if !ok {
 		return result, nil

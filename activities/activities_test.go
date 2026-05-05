@@ -3,7 +3,9 @@ package activities
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/holbrookab/go-ai/packages/ai"
@@ -88,6 +90,71 @@ func TestInvokeToolUsesRegisteredTool(t *testing.T) {
 	}
 	if result.Output.Value != "found temporal" {
 		t.Fatalf("output = %#v", result.Output)
+	}
+}
+
+func TestInvokeToolArtifactsCompactLargeOutput(t *testing.T) {
+	store := &recordingArtifactStore{}
+	big := strings.Repeat("x", 60_000)
+	connector := &recordingConnector{}
+	acts := New(Options{
+		ArtifactStore:   store,
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				InputSchema: map[string]any{"type": "object"},
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return big, nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "lookup",
+		Input:      map[string]any{"query": "temporal"},
+		Lifecycle: ToolLifecycleOptions{
+			StreamID:        "stream-1",
+			DurableRequired: true,
+		},
+		Artifacts: &ToolArtifactPolicy{
+			Enabled:         true,
+			WorkflowID:      "workflow-1",
+			RunID:           "run-1",
+			MaxInlineBytes:  1_024,
+			MaxPreviewBytes: 32,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) != 2 {
+		t.Fatalf("artifact writes = %d, want result and output writes", len(store.writes))
+	}
+	if _, ok := result.Result.(ToolArtifactValue); !ok {
+		t.Fatalf("result was not compacted: %#v", result.Result)
+	}
+	output, ok := result.Output.Value.(ToolArtifactValue)
+	if !ok {
+		t.Fatalf("output was not compacted: %#v", result.Output.Value)
+	}
+	if output.ArtifactRef.ArtifactID == "" || output.OriginalBytes == 0 || output.SHA256 == "" {
+		t.Fatalf("artifact value = %#v", output)
+	}
+	if len(connector.toolDurable) != 2 {
+		t.Fatalf("durable lifecycle = %#v", connector.toolDurable)
+	}
+	terminalOutput, ok := connector.toolDurable[1].Output.(ai.ToolResultOutput)
+	if !ok {
+		t.Fatalf("terminal lifecycle output = %#v", connector.toolDurable[1].Output)
+	}
+	terminal, ok := terminalOutput.Value.(ToolArtifactValue)
+	if !ok {
+		t.Fatalf("terminal lifecycle output = %#v", terminalOutput.Value)
+	}
+	if artifactJSONByteLength(terminal) > 2_000 {
+		t.Fatalf("terminal lifecycle output is too large")
 	}
 }
 
@@ -570,6 +637,21 @@ type recordingConnector struct {
 	toolLive               []streaming.ToolLifecycleInput
 	toolPersistErrForEvent map[streaming.ToolLifecycleEvent]error
 	toolLiveErr            error
+}
+
+type recordingArtifactStore struct {
+	writes []ToolArtifactWriteInput
+}
+
+func (s *recordingArtifactStore) PutToolArtifact(_ context.Context, input ToolArtifactWriteInput) (*ToolArtifactRef, error) {
+	s.writes = append(s.writes, input)
+	return &ToolArtifactRef{
+		ArtifactID:    fmt.Sprintf("%s/%s/%s/%s.json", input.WorkflowID, input.ToolCallID, input.Kind, input.SHA256),
+		Kind:          input.Kind,
+		OriginalBytes: input.OriginalBytes,
+		ContentType:   input.ContentType,
+		SHA256:        input.SHA256,
+	}, nil
 }
 
 func (c *recordingConnector) StartAttempt(_ context.Context, input streaming.AttemptRef) error {

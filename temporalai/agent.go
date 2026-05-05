@@ -19,6 +19,8 @@ const (
 
 	LocalToolTimeoutFallbackActivity LocalToolTimeoutFallback = "activity"
 	LocalToolTimeoutFallbackNone     LocalToolTimeoutFallback = "none"
+
+	toolArtifactCompactionChange = "go-temporal-ai-sdk.tool-artifact-compaction"
 )
 
 type LocalToolTimeoutFallback string
@@ -41,6 +43,7 @@ type AgentInput struct {
 	ToolApproval             AgentToolApprovalOptions            `json:"toolApproval,omitempty"`
 	DefaultToolBoundary      activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
 	LocalToolTimeoutFallback LocalToolTimeoutFallback            `json:"localToolTimeoutFallback,omitempty"`
+	ToolArtifacts            activities.ToolArtifactPolicy       `json:"toolArtifacts,omitempty"`
 }
 
 type AgentResult struct {
@@ -85,10 +88,36 @@ func AgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error)
 	return RunAgent(ctx, input)
 }
 
+func workflowToolArtifactPolicy(ctx workflow.Context, policy activities.ToolArtifactPolicy) activities.ToolArtifactPolicy {
+	if !policy.Enabled {
+		return policy
+	}
+	if workflow.GetVersion(ctx, toolArtifactCompactionChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+		policy.Enabled = false
+		return policy
+	}
+	info := workflow.GetInfo(ctx)
+	if policy.WorkflowID == "" {
+		policy.WorkflowID = info.WorkflowExecution.ID
+	}
+	if policy.RunID == "" {
+		policy.RunID = info.WorkflowExecution.RunID
+	}
+	return policy
+}
+
+func toolArtifactPolicyForActivity(policy activities.ToolArtifactPolicy) *activities.ToolArtifactPolicy {
+	if !policy.Enabled {
+		return nil
+	}
+	return &policy
+}
+
 func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...ActivityOptions) (*AgentResult, error) {
 	if input.ModelID == "" {
 		return nil, fmt.Errorf("modelId is required")
 	}
+	input.ToolArtifacts = workflowToolArtifactPolicy(ctx, input.ToolArtifacts)
 	maxSteps := input.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = defaultAgentMaxSteps
@@ -265,6 +294,7 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 		Messages:               messages,
 		Context:                input.ToolContext,
 		Lifecycle:              toolLifecycleOptions(ctx, input, call),
+		Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
 		Approval:               approval,
 		SuppressInputLifecycle: suppressInputLifecycle,
 	}
@@ -289,6 +319,7 @@ func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages 
 				Messages:               messages,
 				Context:                input.ToolContext,
 				Lifecycle:              toolLifecycleOptions(ctx, input, call),
+				Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
 				Approval:               approval,
 				SuppressInputLifecycle: suppressInputLifecycle,
 			}

@@ -14,12 +14,14 @@ type Options struct {
 	ModelProvider   ai.Provider
 	StreamConnector streaming.Connector
 	Tools           map[string]ai.Tool
+	ArtifactStore   ToolArtifactStore
 }
 
 type Activities struct {
 	provider  ai.Provider
 	connector streaming.Connector
 	tools     map[string]ai.Tool
+	artifacts ToolArtifactStore
 }
 
 func New(opts Options) *Activities {
@@ -31,6 +33,7 @@ func New(opts Options) *Activities {
 		provider:  opts.ModelProvider,
 		connector: connector,
 		tools:     opts.Tools,
+		artifacts: opts.ArtifactStore,
 	}
 }
 

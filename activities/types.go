@@ -73,6 +73,7 @@ type InvokeToolArgs struct {
 	Messages               []Message            `json:"messages,omitempty"`
 	Context                any                  `json:"context,omitempty"`
 	Lifecycle              ToolLifecycleOptions `json:"lifecycle,omitempty"`
+	Artifacts              *ToolArtifactPolicy  `json:"artifacts,omitempty"`
 	Approval               *ToolApprovalState   `json:"approval,omitempty"`
 	SuppressInputLifecycle bool                 `json:"suppressInputLifecycle,omitempty"`
 }

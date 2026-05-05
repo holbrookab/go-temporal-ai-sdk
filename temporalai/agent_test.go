@@ -2,6 +2,9 @@ package temporalai
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +148,107 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	}
 	if modelCalls != 2 {
 		t.Fatalf("model calls = %d", modelCalls)
+	}
+}
+
+func TestRunAgentCompactsToolArtifactsBeforeNextTool(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	store := &agentRecordingArtifactStore{}
+	big := strings.Repeat("x", 600_000)
+	var modelCalls int
+	var secondPromptBytes int
+
+	acts := activities.New(activities.Options{
+		ArtifactStore: store,
+		Tools: map[string]ai.Tool{
+			"big_lookup": {
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return big, nil
+				},
+			},
+			"small_lookup": {
+				Execute: func(_ context.Context, _ ai.ToolCall, opts ai.ToolExecutionOptions) (any, error) {
+					payload, _ := json.Marshal(opts.Messages)
+					if len(payload) > 80_000 {
+						return nil, fmt.Errorf("tool messages too large: %d bytes", len(payload))
+					}
+					return "small result", nil
+				},
+			},
+		},
+	})
+
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			modelCalls++
+			switch modelCalls {
+			case 1:
+				return &activities.InvokeModelResult{
+					Content: []activities.Part{{
+						Type:       "tool-call",
+						ToolCallID: "call-big",
+						ToolName:   "big_lookup",
+						Input:      map[string]any{"query": "large"},
+					}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 2:
+				payload, _ := json.Marshal(args.Options.Prompt)
+				secondPromptBytes = len(payload)
+				text := string(payload)
+				if strings.Contains(text, strings.Repeat("x", 2_000)) {
+					t.Fatalf("second prompt contains raw large tool output")
+				}
+				if !strings.Contains(text, "artifactRef") {
+					t.Fatalf("second prompt omitted artifact ref: %.500s", text)
+				}
+				return &activities.InvokeModelResult{
+					Content: []activities.Part{{
+						Type:       "tool-call",
+						ToolCallID: "call-small",
+						ToolName:   "small_lookup",
+						Input:      map[string]any{"artifactId": "later"},
+					}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			default:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "text", Text: "done"}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+				}, nil
+			}
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+	env.RegisterActivityWithOptions(acts.InvokeTool, activity.RegisterOptions{Name: activities.InvokeToolActivity})
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:       "agent-1",
+		ModelID:       "model-1",
+		Prompt:        "run lookups",
+		ToolExecution: ToolExecutionSequential,
+		ToolArtifacts: activities.ToolArtifactPolicy{
+			Enabled:         true,
+			MaxInlineBytes:  1_024,
+			MaxPreviewBytes: 64,
+		},
+		Tools: []activities.ToolDefinition{
+			{Name: "big_lookup", InputSchema: map[string]any{"type": "object"}},
+			{Name: "small_lookup", InputSchema: map[string]any{"type": "object"}},
+		},
+	})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.writes) < 2 {
+		t.Fatalf("artifact writes = %d", len(store.writes))
+	}
+	if secondPromptBytes == 0 || secondPromptBytes > 80_000 {
+		t.Fatalf("second prompt bytes = %d", secondPromptBytes)
 	}
 }
 
@@ -702,6 +806,21 @@ func registerOneToolAgentActivities(t *testing.T, env *testsuite.TestWorkflowEnv
 		},
 		activity.RegisterOptions{Name: activities.InvokeToolActivity},
 	)
+}
+
+type agentRecordingArtifactStore struct {
+	writes []activities.ToolArtifactWriteInput
+}
+
+func (s *agentRecordingArtifactStore) PutToolArtifact(_ context.Context, input activities.ToolArtifactWriteInput) (*activities.ToolArtifactRef, error) {
+	s.writes = append(s.writes, input)
+	return &activities.ToolArtifactRef{
+		ArtifactID:    fmt.Sprintf("%s/%s/%s/%s.json", input.WorkflowID, input.ToolCallID, input.Kind, input.SHA256),
+		Kind:          input.Kind,
+		OriginalBytes: input.OriginalBytes,
+		ContentType:   input.ContentType,
+		SHA256:        input.SHA256,
+	}, nil
 }
 
 func testAgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
