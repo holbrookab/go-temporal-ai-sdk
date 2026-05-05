@@ -7,12 +7,20 @@ import (
 )
 
 func TestLLMStreamChunkMatchesUIDataShape(t *testing.T) {
+	stepNumber := 0
 	chunk := llmStreamChunk(streaming.EventTextDelta, streaming.LiveChunk{
 		AttemptRef: streaming.AttemptRef{
 			StreamID:  "stream-1",
 			Phase:     streaming.PhaseProviderLive,
 			Lane:      streaming.LaneText,
 			AttemptID: "attempt-1",
+			Scope: streaming.Scope{
+				DisplayMode: streaming.DisplayModeTask,
+				TaskID:      "task-1",
+				StepID:      "step-0",
+				StepNumber:  &stepNumber,
+				StepType:    "initial",
+			},
 		},
 		Sequence: 3,
 		Delta:    "hel",
@@ -26,6 +34,9 @@ func TestLLMStreamChunkMatchesUIDataShape(t *testing.T) {
 	}
 	if data["event"] != streaming.EventTextDelta || data["delta"] != "hel" || data["sequence"] != 3 {
 		t.Fatalf("data = %#v", data)
+	}
+	if data["displayMode"] != "task" || data["taskId"] != "task-1" || data["stepId"] != "step-0" || data["stepNumber"] == nil || data["stepType"] != "initial" {
+		t.Fatalf("scope data = %#v", data)
 	}
 }
 

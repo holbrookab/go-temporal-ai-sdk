@@ -72,6 +72,7 @@ func (r *Relay) Accept(ctx context.Context, part ai.StreamPart) error {
 	if !ok {
 		return nil
 	}
+	meta.scope = mergeScope(r.options.Scope, meta.scope)
 	state, err := r.ensureAttempt(ctx, lane, meta)
 	if err != nil {
 		return err
@@ -199,6 +200,9 @@ func (r *Relay) livePublishError() error {
 
 func (r *Relay) ensureAttempt(ctx context.Context, lane Lane, meta partMeta) (*attemptState, error) {
 	key := string(lane)
+	if meta.scope.StepID != "" {
+		key += ":step:" + meta.scope.StepID
+	}
 	if meta.toolCallID != "" {
 		key += ":" + meta.toolCallID
 	}
@@ -225,6 +229,7 @@ func (r *Relay) ensureAttempt(ctx context.Context, lane Lane, meta partMeta) (*a
 		PartID:     meta.partID,
 		ToolCallID: meta.toolCallID,
 		ToolName:   meta.toolName,
+		Scope:      meta.scope,
 	}
 	if err := r.connector.StartAttempt(ctx, ref); err != nil {
 		return nil, err
@@ -267,6 +272,7 @@ type partMeta struct {
 	delta      string
 	input      any
 	element    any
+	scope      Scope
 }
 
 func classifyPart(defaultLane Lane, part ai.StreamPart) (Event, Lane, partMeta, bool) {
@@ -274,34 +280,80 @@ func classifyPart(defaultLane Lane, part ai.StreamPart) (Event, Lane, partMeta, 
 	if defaultLane == LaneObject {
 		textLane = LaneObject
 	}
+	scope := scopeFromStreamPart(part)
 	switch part.Type {
 	case "stream-start":
-		return EventStreamStart, textLane, partMeta{partID: part.ID}, true
+		return EventStreamStart, textLane, partMeta{partID: part.ID, scope: scope}, true
+	case "start-step":
+		return EventStartStep, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "response-metadata":
-		return EventResponseMeta, textLane, partMeta{partID: part.ID}, true
+		return EventResponseMeta, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "text-delta":
-		return EventTextDelta, textLane, partMeta{partID: part.ID, delta: part.TextDelta}, true
+		return EventTextDelta, textLane, partMeta{partID: part.ID, delta: part.TextDelta, scope: scope}, true
 	case "reasoning-delta":
-		return EventReasoningDelta, LaneReasoning, partMeta{partID: part.ID, delta: part.ReasoningDelta}, true
+		return EventReasoningDelta, LaneReasoning, partMeta{partID: part.ID, delta: part.ReasoningDelta, scope: scope}, true
 	case "tool-input-delta":
-		return EventToolInputDelta, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, delta: part.ToolInputDelta}, true
+		return EventToolInputDelta, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, delta: part.ToolInputDelta, scope: scope}, true
 	case "tool-input-end":
-		return EventToolInputEnd, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, delta: part.ToolInput}, true
+		return EventToolInputEnd, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, delta: part.ToolInput, scope: scope}, true
 	case "tool-call":
-		return EventToolCall, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, input: part.ToolInput}, true
+		return EventToolCall, LaneToolInput, partMeta{partID: part.ID, toolCallID: part.ToolCallID, toolName: part.ToolName, input: part.ToolInput, scope: scope}, true
 	case "element":
-		return EventElement, LaneObject, partMeta{partID: part.ID, element: part.Element}, true
+		return EventElement, LaneObject, partMeta{partID: part.ID, element: part.Element, scope: scope}, true
 	case "file":
-		return EventFile, textLane, partMeta{partID: part.ID}, true
+		return EventFile, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "source":
-		return EventSource, textLane, partMeta{partID: part.ID}, true
+		return EventSource, textLane, partMeta{partID: part.ID, scope: scope}, true
+	case "finish-step":
+		return EventFinishStep, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "finish":
-		return EventFinish, textLane, partMeta{partID: part.ID}, true
+		return EventFinish, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "abort":
-		return EventAbort, textLane, partMeta{partID: part.ID}, true
+		return EventAbort, textLane, partMeta{partID: part.ID, scope: scope}, true
 	default:
 		return "", "", partMeta{}, false
 	}
+}
+
+func scopeFromStreamPart(part ai.StreamPart) Scope {
+	scope := Scope{
+		StepID:   part.StepID,
+		StepType: part.StepType,
+	}
+	if part.StepID != "" || part.StepType != "" || part.StepNumber != 0 {
+		stepNumber := part.StepNumber
+		scope.StepNumber = &stepNumber
+	}
+	return scope
+}
+
+func mergeScope(base Scope, override Scope) Scope {
+	out := base
+	if override.DisplayMode != "" {
+		out.DisplayMode = override.DisplayMode
+	}
+	if override.AgentID != "" {
+		out.AgentID = override.AgentID
+	}
+	if override.TaskID != "" {
+		out.TaskID = override.TaskID
+	}
+	if override.TaskTitle != "" {
+		out.TaskTitle = override.TaskTitle
+	}
+	if override.SkillName != "" {
+		out.SkillName = override.SkillName
+	}
+	if override.StepID != "" {
+		out.StepID = override.StepID
+	}
+	if override.StepNumber != nil {
+		out.StepNumber = override.StepNumber
+	}
+	if override.StepType != "" {
+		out.StepType = override.StepType
+	}
+	return out
 }
 
 func sanitize(value string) string {

@@ -273,6 +273,7 @@ func toolLifecycleInput(args InvokeToolArgs, event streaming.ToolLifecycleEvent)
 		ToolCallID: args.ToolCallID,
 		ToolName:   args.ToolName,
 		Metadata:   args.Lifecycle.Metadata,
+		Scope:      args.Lifecycle.Scope,
 	}, true
 }
 

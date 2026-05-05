@@ -19,6 +19,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["delta"] = value.Delta
 		data["input"] = value.Input
 		data["element"] = value.Element
+		addScopeFields(data, value.Scope)
 	case streaming.AttemptCompletion:
 		id = chunkID(value.Lane, value.ToolCallID, value.AttemptID)
 		data["streamId"] = value.StreamID
@@ -33,6 +34,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["reason"] = value.Reason
 		data["snapshotText"] = value.SnapshotText
 		data["snapshotObject"] = value.SnapshotObject
+		addScopeFields(data, value.Scope)
 	}
 	return map[string]any{
 		"type":      "data-llm-stream",
@@ -45,6 +47,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 	chunk := map[string]any{
 		"eventId":          input.EventID,
+		"streamId":         input.StreamID,
 		"type":             string(input.Event),
 		"toolCallId":       input.ToolCallID,
 		"toolName":         input.ToolName,
@@ -53,6 +56,7 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 		"providerExecuted": input.ProviderExecuted,
 		"metadata":         input.Metadata,
 	}
+	addScopeFields(chunk, input.Scope)
 	switch input.Event {
 	case streaming.ToolInputAvailable:
 		chunk["input"] = input.Input
@@ -69,6 +73,17 @@ func toolLifecycleChunk(input streaming.ToolLifecycleInput) map[string]any {
 	case streaming.ToolOutputDenied:
 	}
 	return cleanChunkMap(chunk)
+}
+
+func addScopeFields(data map[string]any, scope streaming.Scope) {
+	data["displayMode"] = string(scope.DisplayMode)
+	data["agentId"] = scope.AgentID
+	data["taskId"] = scope.TaskID
+	data["taskTitle"] = scope.TaskTitle
+	data["skillName"] = scope.SkillName
+	data["stepId"] = scope.StepID
+	data["stepNumber"] = scope.StepNumber
+	data["stepType"] = scope.StepType
 }
 
 func toolLifecycleEventID(input streaming.ToolLifecycleInput) string {

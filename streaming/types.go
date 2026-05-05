@@ -22,6 +22,7 @@ type Event string
 
 const (
 	EventStreamStart    Event = "stream-start"
+	EventStartStep      Event = "start-step"
 	EventResponseMeta   Event = "response-metadata"
 	EventTextDelta      Event = "text-delta"
 	EventReasoningDelta Event = "reasoning-delta"
@@ -31,6 +32,7 @@ const (
 	EventElement        Event = "element"
 	EventFile           Event = "file"
 	EventSource         Event = "source"
+	EventFinishStep     Event = "finish-step"
 	EventFinish         Event = "finish"
 	EventAbort          Event = "abort"
 	EventSnapshot       Event = "snapshot"
@@ -61,6 +63,25 @@ const (
 	ToolOutputDenied     ToolLifecycleEvent = "tool-output-denied"
 )
 
+type DisplayMode string
+
+const (
+	DisplayModeAssistant DisplayMode = "assistant"
+	DisplayModeTask      DisplayMode = "task"
+	DisplayModeHidden    DisplayMode = "hidden"
+)
+
+type Scope struct {
+	DisplayMode DisplayMode `json:"displayMode,omitempty"`
+	AgentID     string      `json:"agentId,omitempty"`
+	TaskID      string      `json:"taskId,omitempty"`
+	TaskTitle   string      `json:"taskTitle,omitempty"`
+	SkillName   string      `json:"skillName,omitempty"`
+	StepID      string      `json:"stepId,omitempty"`
+	StepNumber  *int        `json:"stepNumber,omitempty"`
+	StepType    string      `json:"stepType,omitempty"`
+}
+
 type Options struct {
 	Visible                 bool   `json:"visible,omitempty"`
 	StreamID                string `json:"streamId,omitempty"`
@@ -69,6 +90,7 @@ type Options struct {
 	SnapshotEveryChunks     int    `json:"snapshotEveryChunks,omitempty"`
 	SnapshotEveryCharacters int    `json:"snapshotEveryChars,omitempty"`
 	PersistEphemeralChunks  bool   `json:"persistEphemeralChunks,omitempty"`
+	Scope
 }
 
 type AttemptRef struct {
@@ -79,6 +101,7 @@ type AttemptRef struct {
 	PartID     string `json:"partId,omitempty"`
 	ToolCallID string `json:"toolCallId,omitempty"`
 	ToolName   string `json:"toolName,omitempty"`
+	Scope
 }
 
 type AttemptSnapshot struct {
@@ -126,4 +149,5 @@ type ToolLifecycleInput struct {
 	ProviderExecuted bool               `json:"providerExecuted,omitempty"`
 	Preliminary      bool               `json:"preliminary,omitempty"`
 	Metadata         map[string]any     `json:"metadata,omitempty"`
+	Scope
 }

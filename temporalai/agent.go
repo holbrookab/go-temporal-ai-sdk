@@ -57,7 +57,9 @@ type AgentResult struct {
 }
 
 type AgentStep struct {
+	StepID      string                                 `json:"stepId,omitempty"`
 	StepNumber  int                                    `json:"stepNumber"`
+	StepType    string                                 `json:"stepType,omitempty"`
 	ModelResult activities.LanguageModelGenerateResult `json:"modelResult"`
 	Text        string                                 `json:"text,omitempty"`
 	ToolCalls   []AgentToolCall                        `json:"toolCalls,omitempty"`
@@ -67,6 +69,9 @@ type AgentStep struct {
 type AgentToolCall struct {
 	ToolCallID       string              `json:"toolCallId"`
 	ToolName         string              `json:"toolName"`
+	StepID           string              `json:"stepId,omitempty"`
+	StepNumber       int                 `json:"stepNumber"`
+	StepType         string              `json:"stepType,omitempty"`
 	Input            any                 `json:"input,omitempty"`
 	InputRaw         string              `json:"inputRaw,omitempty"`
 	ProviderExecuted bool                `json:"providerExecuted,omitempty"`
@@ -95,6 +100,8 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 		Messages: append([]activities.Message(nil), messages...),
 	}
 	for stepNumber := 0; stepNumber < maxSteps; stepNumber++ {
+		stepID := agentStepID(stepNumber)
+		stepType := agentStepType(stepNumber)
 		callOptions := input.ModelOptions
 		callOptions.Prompt = append([]activities.Message(nil), messages...)
 		toolChoice := input.ToolChoice
@@ -108,7 +115,7 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 			callOptions.ToolChoice = ai.AutoToolChoice()
 		}
 		if input.Stream.Visible || input.UseStreamingModel {
-			callOptions.ProviderOptions = withAgentStreamOptions(ctx, input, stepNumber, callOptions.ProviderOptions)
+			callOptions.ProviderOptions = withAgentStreamOptions(ctx, input, stepID, stepNumber, stepType, callOptions.ProviderOptions)
 		}
 
 		modelResult, err := invokeAgentModel(ctx, input, callOptions, activityOptions...)
@@ -116,10 +123,12 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 			return nil, err
 		}
 		step := AgentStep{
+			StepID:      stepID,
 			StepNumber:  stepNumber,
+			StepType:    stepType,
 			ModelResult: *modelResult,
 			Text:        textFromWireParts(modelResult.Content),
-			ToolCalls:   extractToolCalls(modelResult.Content),
+			ToolCalls:   extractToolCalls(modelResult.Content, stepID, stepNumber, stepType),
 		}
 		result.Text = step.Text
 		result.FinishReason = modelResult.FinishReason.Unified
@@ -255,7 +264,7 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 		Input:                  call.Input,
 		Messages:               messages,
 		Context:                input.ToolContext,
-		Lifecycle:              toolLifecycleOptions(ctx, input),
+		Lifecycle:              toolLifecycleOptions(ctx, input, call),
 		Approval:               approval,
 		SuppressInputLifecycle: suppressInputLifecycle,
 	}
@@ -279,7 +288,7 @@ func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages 
 				Input:                  call.Input,
 				Messages:               messages,
 				Context:                input.ToolContext,
-				Lifecycle:              toolLifecycleOptions(ctx, input),
+				Lifecycle:              toolLifecycleOptions(ctx, input, call),
 				Approval:               approval,
 				SuppressInputLifecycle: suppressInputLifecycle,
 			}
@@ -310,7 +319,7 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 	if !ok || !definition.RequiresApproval {
 		return nil, false, nil, nil
 	}
-	lifecycle := toolLifecycleOptions(ctx, input)
+	lifecycle := toolLifecycleOptions(ctx, input, call)
 	metadata := mergeApprovalMetadata(lifecycle.Metadata, input.ToolApproval.Metadata)
 	inputPublished := false
 	if lifecycle.StreamID != "" {
@@ -323,6 +332,7 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 			Input:      call.Input,
 			Dynamic:    call.Dynamic,
 			Metadata:   metadata,
+			Scope:      lifecycle.Scope,
 		}, options); err != nil {
 			return nil, false, nil, err
 		}
@@ -336,6 +346,7 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 		ToolName:        call.ToolName,
 		Input:           call.Input,
 		Metadata:        metadata,
+		Scope:           lifecycle.Scope,
 		DurableRequired: lifecycle.DurableRequired,
 		Timeout:         input.ToolApproval.Timeout,
 		SignalName:      input.ToolApproval.SignalName,
@@ -356,6 +367,7 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 			ToolCallID: call.ToolCallID,
 			ToolName:   call.ToolName,
 			Metadata:   metadata,
+			Scope:      lifecycle.Scope,
 		}, options); err != nil {
 			return nil, inputPublished, nil, err
 		}
@@ -442,12 +454,13 @@ func initialAgentMessages(input AgentInput) []activities.Message {
 	return messages
 }
 
-func withAgentStreamOptions(ctx workflow.Context, input AgentInput, stepNumber int, providerOptions ai.ProviderOptions) ai.ProviderOptions {
+func withAgentStreamOptions(ctx workflow.Context, input AgentInput, stepID string, stepNumber int, stepType string, providerOptions ai.ProviderOptions) ai.ProviderOptions {
 	out := ai.ProviderOptions{}
 	for key, value := range providerOptions {
 		out[key] = value
 	}
 	options := input.Stream
+	options.Scope = agentStepScope(input, stepID, stepNumber, stepType)
 	if options.StreamID == "" {
 		options.StreamID = streamID(ctx, "")
 	}
@@ -456,13 +469,68 @@ func withAgentStreamOptions(ctx workflow.Context, input AgentInput, stepNumber i
 		if agentID == "" {
 			agentID = "agent"
 		}
-		options.AttemptID = fmt.Sprintf("%s:step-%d", agentID, stepNumber)
+		options.AttemptID = fmt.Sprintf("%s:%s", agentID, stepID)
 	}
 	if !options.Visible && input.UseStreamingModel {
 		options.Visible = true
 	}
 	out[activities.ProviderOptionsKey] = options
 	return out
+}
+
+func agentStepID(stepNumber int) string {
+	return fmt.Sprintf("step-%d", stepNumber)
+}
+
+func agentStepType(stepNumber int) string {
+	if stepNumber == 0 {
+		return "initial"
+	}
+	return "tool-result"
+}
+
+func agentStepScope(input AgentInput, stepID string, stepNumber int, stepType string) streaming.Scope {
+	scope := input.Stream.Scope
+	toolContextScope := streamScopeFromContext(input.ToolContext)
+	if scope.AgentID == "" {
+		scope.AgentID = input.AgentID
+	}
+	if scope.TaskID == "" {
+		scope.TaskID = toolContextScope.TaskID
+	}
+	if scope.TaskTitle == "" {
+		scope.TaskTitle = toolContextScope.TaskTitle
+	}
+	if scope.SkillName == "" {
+		scope.SkillName = toolContextScope.SkillName
+	}
+	scope.StepID = stepID
+	scope.StepNumber = intPtr(stepNumber)
+	scope.StepType = stepType
+	return scope
+}
+
+func agentToolScope(input AgentInput, call AgentToolCall) streaming.Scope {
+	stepNumber := call.StepNumber
+	return agentStepScope(input, call.StepID, stepNumber, call.StepType)
+}
+
+func streamScopeFromContext(context any) streaming.Scope {
+	metadata := toolLifecycleMetadataFromContext(context)
+	return streaming.Scope{
+		TaskID:    stringFromMetadata(metadata, "taskId"),
+		TaskTitle: stringFromMetadata(metadata, "taskTitle"),
+		SkillName: stringFromMetadata(metadata, "skillName"),
+	}
+}
+
+func stringFromMetadata(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return value
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func streamID(ctx workflow.Context, configured string) string {
@@ -479,12 +547,13 @@ func toolLifecycleStreamID(ctx workflow.Context, input AgentInput) string {
 	return streamID(ctx, input.Stream.StreamID)
 }
 
-func toolLifecycleOptions(ctx workflow.Context, input AgentInput) activities.ToolLifecycleOptions {
+func toolLifecycleOptions(ctx workflow.Context, input AgentInput, call AgentToolCall) activities.ToolLifecycleOptions {
 	streamID := toolLifecycleStreamID(ctx, input)
 	if streamID == "" {
 		return activities.ToolLifecycleOptions{}
 	}
-	metadata := map[string]any{"agentId": input.AgentID}
+	scope := agentToolScope(input, call)
+	metadata := map[string]any{"agentId": scope.AgentID}
 	for key, value := range toolLifecycleMetadataFromContext(input.ToolContext) {
 		metadata[key] = value
 	}
@@ -492,6 +561,7 @@ func toolLifecycleOptions(ctx workflow.Context, input AgentInput) activities.Too
 		StreamID:        streamID,
 		Metadata:        metadata,
 		DurableRequired: true,
+		Scope:           scope,
 	}
 }
 
@@ -515,6 +585,7 @@ func toolLifecycleMetadataFromContext(context any) map[string]any {
 	metadata := map[string]any{}
 	copyStringMetadata(metadata, raw, "taskId")
 	copyStringMetadata(metadata, raw, "taskTitle")
+	copyStringMetadata(metadata, raw, "skillName")
 	if len(metadata) == 0 {
 		return nil
 	}
@@ -529,7 +600,7 @@ func copyStringMetadata(out map[string]any, raw map[string]any, key string) {
 	out[key] = value
 }
 
-func extractToolCalls(parts []activities.Part) []AgentToolCall {
+func extractToolCalls(parts []activities.Part, stepID string, stepNumber int, stepType string) []AgentToolCall {
 	calls := []AgentToolCall{}
 	for _, part := range parts {
 		if part.Type != "tool-call" {
@@ -551,6 +622,9 @@ func extractToolCalls(parts []activities.Part) []AgentToolCall {
 		calls = append(calls, AgentToolCall{
 			ToolCallID:       part.ToolCallID,
 			ToolName:         part.ToolName,
+			StepID:           stepID,
+			StepNumber:       stepNumber,
+			StepType:         stepType,
 			Input:            input,
 			InputRaw:         part.InputRaw,
 			ProviderExecuted: part.ProviderExecuted,

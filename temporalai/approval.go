@@ -29,6 +29,7 @@ type ToolApprovalRequest struct {
 	DurableRequired bool           `json:"durableRequired,omitempty"`
 	Timeout         time.Duration  `json:"timeout,omitempty"`
 	SignalName      string         `json:"signalName,omitempty"`
+	streaming.Scope
 }
 
 type ToolApprovalResponse struct {
@@ -60,6 +61,7 @@ func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, acti
 			ApprovalID: request.ApprovalID,
 			Input:      request.Input,
 			Metadata:   request.Metadata,
+			Scope:      request.Scope,
 		}, activityOptions...); err != nil {
 			return nil, err
 		}
@@ -76,6 +78,7 @@ func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, acti
 			Approved:   &response.Approved,
 			Reason:     response.Reason,
 			Metadata:   request.Metadata,
+			Scope:      request.Scope,
 		}, activityOptions...); err != nil {
 			return nil, err
 		}

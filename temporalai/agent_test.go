@@ -20,17 +20,41 @@ func TestToolLifecycleMetadataFromContextCopiesTaskFields(t *testing.T) {
 	metadata := toolLifecycleMetadataFromContext(struct {
 		TaskID             string `json:"taskId"`
 		TaskTitle          string `json:"taskTitle"`
+		SkillName          string `json:"skillName"`
 		AssistantMessageID string `json:"assistantMessageId"`
 	}{
 		TaskID:             "task-1",
 		TaskTitle:          "Find records",
+		SkillName:          "Search",
 		AssistantMessageID: "message-1",
 	})
-	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" {
+	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" || metadata["skillName"] != "Search" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 	if _, ok := metadata["assistantMessageId"]; ok {
 		t.Fatalf("metadata leaked persistence field: %#v", metadata)
+	}
+}
+
+func TestAgentStepScopeIncludesTaskSkillAndStep(t *testing.T) {
+	scope := agentStepScope(AgentInput{
+		AgentID: "agent-1",
+		Stream:  streaming.Options{Scope: streaming.Scope{DisplayMode: streaming.DisplayModeTask}},
+		ToolContext: struct {
+			TaskID    string `json:"taskId"`
+			TaskTitle string `json:"taskTitle"`
+			SkillName string `json:"skillName"`
+		}{
+			TaskID:    "task-1",
+			TaskTitle: "Find records",
+			SkillName: "Search",
+		},
+	}, "step-0", 0, "initial")
+	if scope.DisplayMode != streaming.DisplayModeTask || scope.AgentID != "agent-1" || scope.TaskID != "task-1" || scope.TaskTitle != "Find records" || scope.SkillName != "Search" {
+		t.Fatalf("scope = %#v", scope)
+	}
+	if scope.StepID != "step-0" || scope.StepNumber == nil || *scope.StepNumber != 0 || scope.StepType != "initial" {
+		t.Fatalf("step scope = %#v", scope)
 	}
 }
 

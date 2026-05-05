@@ -86,6 +86,9 @@ type ResponseMetadata struct {
 type StreamPart struct {
 	Type             string              `json:"type"`
 	ID               string              `json:"id,omitempty"`
+	StepID           string              `json:"stepId,omitempty"`
+	StepNumber       int                 `json:"stepNumber"`
+	StepType         string              `json:"stepType,omitempty"`
 	TextDelta        string              `json:"textDelta,omitempty"`
 	PartialOutput    any                 `json:"partialOutput,omitempty"`
 	Element          any                 `json:"element,omitempty"`
@@ -388,6 +391,9 @@ func StreamPartFromAI(part ai.StreamPart) StreamPart {
 	return StreamPart{
 		Type:             part.Type,
 		ID:               part.ID,
+		StepID:           part.StepID,
+		StepNumber:       part.StepNumber,
+		StepType:         part.StepType,
 		TextDelta:        part.TextDelta,
 		PartialOutput:    part.PartialOutput,
 		Element:          part.Element,
@@ -428,6 +434,9 @@ func (part StreamPart) ToAI() ai.StreamPart {
 	return ai.StreamPart{
 		Type:             part.Type,
 		ID:               part.ID,
+		StepID:           part.StepID,
+		StepNumber:       part.StepNumber,
+		StepType:         part.StepType,
 		TextDelta:        part.TextDelta,
 		PartialOutput:    part.PartialOutput,
 		Element:          part.Element,

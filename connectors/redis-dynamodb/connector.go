@@ -149,6 +149,14 @@ func (c *Connector) upsertAttempt(ctx context.Context, attempt streaming.Attempt
 		":partId":           attempt.PartID,
 		":toolCallId":       attempt.ToolCallID,
 		":toolName":         attempt.ToolName,
+		":displayMode":      string(attempt.DisplayMode),
+		":agentId":          attempt.AgentID,
+		":taskId":           attempt.TaskID,
+		":taskTitle":        attempt.TaskTitle,
+		":skillName":        attempt.SkillName,
+		":stepId":           attempt.StepID,
+		":stepNumber":       attempt.StepNumber,
+		":stepType":         attempt.StepType,
 		":status":           update.Status,
 		":updatedAt":        now.UnixMilli(),
 		":attemptStreamId":  attempt.StreamID,
@@ -191,6 +199,30 @@ func (c *Connector) upsertAttempt(ctx context.Context, attempt streaming.Attempt
 	}
 	if values[":toolName"] != nil {
 		sets = append(sets, "toolName = :toolName")
+	}
+	if values[":displayMode"] != nil {
+		sets = append(sets, "displayMode = :displayMode")
+	}
+	if values[":agentId"] != nil {
+		sets = append(sets, "agentId = :agentId")
+	}
+	if values[":taskId"] != nil {
+		sets = append(sets, "taskId = :taskId")
+	}
+	if values[":taskTitle"] != nil {
+		sets = append(sets, "taskTitle = :taskTitle")
+	}
+	if values[":skillName"] != nil {
+		sets = append(sets, "skillName = :skillName")
+	}
+	if values[":stepId"] != nil {
+		sets = append(sets, "stepId = :stepId")
+	}
+	if values[":stepNumber"] != nil {
+		sets = append(sets, "stepNumber = :stepNumber")
+	}
+	if values[":stepType"] != nil {
+		sets = append(sets, "stepType = :stepType")
 	}
 	if values[":snapshotText"] != nil {
 		sets = append(sets, "snapshotText = :snapshotText")
@@ -380,7 +412,7 @@ func (c *Connector) cleanMap(input map[string]any) map[string]any {
 
 func reservedAttemptField(key string) bool {
 	switch key {
-	case "entityType", "streamId", "phase", "lane", "attemptId", "partId", "toolCallId", "toolName", "status", "updatedAt", "attemptStreamId", "attemptUpdatedAt", "snapshotSequence", "snapshotText", "snapshotObject", "discardReason", "completedAt", "expiresAt":
+	case "entityType", "streamId", "phase", "lane", "attemptId", "partId", "toolCallId", "toolName", "displayMode", "agentId", "taskId", "taskTitle", "skillName", "stepId", "stepNumber", "stepType", "status", "updatedAt", "attemptStreamId", "attemptUpdatedAt", "snapshotSequence", "snapshotText", "snapshotObject", "discardReason", "completedAt", "expiresAt":
 		return true
 	default:
 		return false

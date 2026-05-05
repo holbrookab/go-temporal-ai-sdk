@@ -44,10 +44,8 @@ github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2 h1:sGm2vDRFUrQJO/Veii4h4z
 github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2/go.mod h1:wd1YpapPLivG6nQgbf7ZkG1hhSOXDhhn4MLTknx2aAc=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 h1:asbCHRVmodnJTuQ3qamDwqVOIjwqUPTYmYuemVOx+Ys=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0/go.mod h1:ggCgvZ2r7uOoQjOyu2Y1NhHmEPPzzuhWgcza5M1Ji1I=
-github.com/holbrookab/go-ai v0.2.2 h1:Jl7AR1LJlXpqiXuTFyqAkWBl+RrIGuj6EgFPi4lxNEI=
-github.com/holbrookab/go-ai v0.2.2/go.mod h1:qLWvfWNuZUlLMUgMGmhS+yo724+S4KUedPEfw55qELQ=
-github.com/holbrookab/go-ai v0.2.3 h1:a8UcCyzxj00y7pbuvqEvAyJF/qP1naQDnaSPG10Do2o=
-github.com/holbrookab/go-ai v0.2.3/go.mod h1:qLWvfWNuZUlLMUgMGmhS+yo724+S4KUedPEfw55qELQ=
+github.com/holbrookab/go-ai v0.2.4 h1:6FO1VwIcycl+cudnjTK7Rajcz87TVqPEPLMYeaOCy+I=
+github.com/holbrookab/go-ai v0.2.4/go.mod h1:qLWvfWNuZUlLMUgMGmhS+yo724+S4KUedPEfw55qELQ=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=

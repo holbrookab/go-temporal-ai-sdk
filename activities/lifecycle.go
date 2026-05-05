@@ -67,6 +67,7 @@ func RunWithToolLifecycle(ctx context.Context, opts ToolLifecycleActivityOptions
 		ProviderExecuted: terminal.ProviderExecuted,
 		Preliminary:      terminal.Preliminary,
 		Metadata:         start.Metadata,
+		Scope:            start.Scope,
 	}
 	if err := publishLifecycleEvent(ctx, connector, opts.DurableRequired, input); err != nil {
 		return nil, err

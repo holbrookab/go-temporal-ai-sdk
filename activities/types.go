@@ -81,6 +81,7 @@ type ToolLifecycleOptions struct {
 	StreamID        string         `json:"streamId,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	DurableRequired bool           `json:"durableRequired,omitempty"`
+	streaming.Scope
 }
 
 type ToolApprovalState struct {
