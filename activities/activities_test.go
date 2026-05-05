@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/holbrookab/go-ai/packages/ai"
@@ -446,6 +447,33 @@ func TestInvokeModelStreamParsesToolCallInputRaw(t *testing.T) {
 	}
 	if aiCall.Input == nil {
 		t.Fatalf("ToAI input is nil")
+	}
+}
+
+func TestWirePreservesTextAndFileProviderMetadata(t *testing.T) {
+	metadata := ai.ProviderMetadata{"googleVertex": map[string]any{"thoughtSignature": "sig-1"}}
+
+	textWire := PartFromAI(ai.TextPart{Text: "hello", ProviderMetadata: metadata})
+	if !reflect.DeepEqual(textWire.ProviderMetadata, metadata) {
+		t.Fatalf("text wire metadata = %#v", textWire.ProviderMetadata)
+	}
+	textAI, ok := textWire.ToAI().(ai.TextPart)
+	if !ok || !reflect.DeepEqual(textAI.ProviderMetadata, metadata) {
+		t.Fatalf("text ToAI metadata = %#v", textWire.ToAI())
+	}
+
+	fileWire := PartFromAI(ai.FilePart{
+		Data:             ai.FileData{Type: "url", URL: "https://example.test/doc.txt"},
+		MediaType:        "text/plain",
+		Filename:         "doc.txt",
+		ProviderMetadata: metadata,
+	})
+	if !reflect.DeepEqual(fileWire.ProviderMetadata, metadata) {
+		t.Fatalf("file wire metadata = %#v", fileWire.ProviderMetadata)
+	}
+	fileAI, ok := fileWire.ToAI().(ai.FilePart)
+	if !ok || !reflect.DeepEqual(fileAI.ProviderMetadata, metadata) {
+		t.Fatalf("file ToAI metadata = %#v", fileWire.ToAI())
 	}
 }
 

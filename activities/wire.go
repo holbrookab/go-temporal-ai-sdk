@@ -241,9 +241,9 @@ func PartsToAI(parts []Part) []ai.Part {
 func PartFromAI(part ai.Part) Part {
 	switch part := part.(type) {
 	case ai.TextPart:
-		return Part{Type: "text", Text: part.Text, ProviderOptions: part.ProviderOptions}
+		return Part{Type: "text", Text: part.Text, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.FilePart:
-		return Part{Type: "file", Data: part.Data, MediaType: part.MediaType, Filename: part.Filename, ProviderOptions: part.ProviderOptions}
+		return Part{Type: "file", Data: part.Data, MediaType: part.MediaType, Filename: part.Filename, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.ReasoningPart:
 		return Part{Type: "reasoning", Text: part.Text, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.ReasoningFilePart:
@@ -266,9 +266,9 @@ func PartFromAI(part ai.Part) Part {
 func (part Part) ToAI() ai.Part {
 	switch part.Type {
 	case "text":
-		return ai.TextPart{Text: part.Text, ProviderOptions: part.ProviderOptions}
+		return ai.TextPart{Text: part.Text, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "file":
-		return ai.FilePart{Data: part.Data, MediaType: part.MediaType, Filename: part.Filename, ProviderOptions: part.ProviderOptions}
+		return ai.FilePart{Data: part.Data, MediaType: part.MediaType, Filename: part.Filename, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "reasoning":
 		return ai.ReasoningPart{Text: part.Text, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "reasoning-file":
