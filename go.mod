@@ -8,8 +8,9 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.39
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.57.3
-	github.com/holbrookab/go-ai v0.2.1
+	github.com/holbrookab/go-ai v0.2.2
 	github.com/redis/go-redis/v9 v9.19.0
+	go.temporal.io/api v1.62.7
 	go.temporal.io/sdk v1.42.0
 )
 
@@ -33,7 +34,6 @@ require (
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
-	go.temporal.io/api v1.62.7 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect

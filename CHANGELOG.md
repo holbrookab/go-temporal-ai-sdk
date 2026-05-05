@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bumped `go-ai` to `v0.2.2` for the Vertex empty message parts fix.
 - Added tool execution boundaries for durable agents. Tools still default to
   regular Temporal activities, but agents can opt into local tool activities by
   default or override the boundary per tool.
