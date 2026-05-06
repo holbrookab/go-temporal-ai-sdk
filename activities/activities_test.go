@@ -525,6 +525,60 @@ func TestInvokeModelStreamPublishesConnectorAttempt(t *testing.T) {
 	}
 }
 
+func TestInvokeModelStreamPublishesPartialJSONOutputSnapshots(t *testing.T) {
+	model := ai.NewMockLanguageModel("stream-1")
+	model.StreamFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		if opts.ResponseFormat == nil || opts.ResponseFormat.Type != "json" {
+			t.Fatalf("response format = %#v, want json", opts.ResponseFormat)
+		}
+		ch := make(chan ai.StreamPart, 3)
+		ch <- ai.StreamPart{Type: "text-delta", TextDelta: `{"status"`}
+		ch <- ai.StreamPart{Type: "text-delta", TextDelta: `:"needs_user"}`}
+		ch <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop}}
+		close(ch)
+		return &ai.LanguageModelStreamResult{Stream: ch}, nil
+	}
+	connector := &recordingConnector{}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"stream-1": model},
+		},
+		StreamConnector: connector,
+	})
+
+	_, err := acts.InvokeModelStream(context.Background(), InvokeModelStreamArgs{
+		ModelID: "stream-1",
+		Options: LanguageModelCallOptionsFromAI(ai.LanguageModelCallOptions{
+			ResponseFormat: &ai.ResponseFormat{Type: "json", Schema: map[string]any{"type": "object"}},
+			ProviderOptions: ai.ProviderOptions{
+				ProviderOptionsKey: streaming.Options{
+					Visible:   true,
+					StreamID:  "stream-123",
+					AttemptID: "turn-1",
+					Lane:      streaming.LaneObject,
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(connector.live) != 2 {
+		t.Fatalf("live chunks = %#v", connector.live)
+	}
+	if connector.live[0].Delta != "" {
+		t.Fatalf("object lane delta = %q, want raw JSON suppressed", connector.live[0].Delta)
+	}
+	object, ok := connector.live[0].SnapshotObject.(map[string]any)
+	if !ok || object["status"] != "needs_user" {
+		t.Fatalf("live object = %#v", connector.live[0].SnapshotObject)
+	}
+	completion, ok := connector.completions[0].SnapshotObject.(map[string]any)
+	if !ok || completion["status"] != "needs_user" {
+		t.Fatalf("completion object = %#v", connector.completions[0].SnapshotObject)
+	}
+}
+
 func TestInvokeModelStreamParsesToolCallInputRaw(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {

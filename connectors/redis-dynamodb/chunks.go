@@ -29,6 +29,7 @@ func llmStreamChunk(event streaming.Event, input any) map[string]any {
 		data["delta"] = value.Delta
 		data["input"] = compactStreamValue(value.Input)
 		data["element"] = compactStreamValue(value.Element)
+		data["snapshotObject"] = compactStreamValue(value.SnapshotObject)
 		addScopeFields(data, value.Scope)
 	case streaming.AttemptCompletion:
 		id = chunkID(value.Lane, value.ToolCallID, value.AttemptID)

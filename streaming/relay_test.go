@@ -76,6 +76,49 @@ func TestRelayCompletionCarriesFinalSnapshot(t *testing.T) {
 	}
 }
 
+func TestRelayCarriesObjectSnapshotsWithoutRawJSONText(t *testing.T) {
+	connector := &recordingConnector{}
+	relay := NewRelay(connector, Options{
+		Visible:  true,
+		StreamID: "stream-1",
+		Lane:     LaneObject,
+	})
+
+	if err := relay.Accept(context.Background(), ai.StreamPart{Type: "text-delta", TextDelta: `{"status"`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.Accept(context.Background(), ai.StreamPart{
+		Type:          "text-delta",
+		TextDelta:     `:"needs_user"}`,
+		PartialOutput: map[string]any{"status": "needs_user"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := relay.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(connector.live) != 1 {
+		t.Fatalf("live chunks = %#v", connector.live)
+	}
+	if connector.live[0].Delta != "" {
+		t.Fatalf("object lane delta = %q, want raw JSON suppressed", connector.live[0].Delta)
+	}
+	object, ok := connector.live[0].SnapshotObject.(map[string]any)
+	if !ok || object["status"] != "needs_user" {
+		t.Fatalf("live object = %#v", connector.live[1].SnapshotObject)
+	}
+	if len(connector.snapshots) == 0 {
+		t.Fatal("expected object snapshot")
+	}
+	snapshot, ok := connector.snapshots[len(connector.snapshots)-1].SnapshotObject.(map[string]any)
+	if !ok || snapshot["status"] != "needs_user" {
+		t.Fatalf("snapshot object = %#v", connector.snapshots[len(connector.snapshots)-1].SnapshotObject)
+	}
+	if connector.completions[0].SnapshotText != "" {
+		t.Fatalf("completion snapshot text = %q, want empty object-lane text", connector.completions[0].SnapshotText)
+	}
+}
+
 func TestRelayCarriesTaskStepScope(t *testing.T) {
 	connector := &recordingConnector{}
 	relay := NewRelay(connector, Options{

@@ -33,6 +33,7 @@ type attemptState struct {
 	ref                    AttemptRef
 	sequence               int
 	text                   strings.Builder
+	object                 any
 	lastSnapshotSequence   int
 	lastSnapshotTextLength int
 }
@@ -81,17 +82,24 @@ func (r *Relay) Accept(ctx context.Context, part ai.StreamPart) error {
 	if meta.delta != "" {
 		state.text.WriteString(meta.delta)
 	}
+	if meta.hasObject {
+		state.object = meta.object
+	}
 	chunk := LiveChunk{
-		AttemptRef:   state.ref,
-		Event:        event,
-		Sequence:     state.sequence,
-		Delta:        meta.delta,
-		Input:        meta.input,
-		Element:      meta.element,
-		ProviderPart: part,
+		AttemptRef:     state.ref,
+		Event:          event,
+		Sequence:       state.sequence,
+		Delta:          meta.delta,
+		Input:          meta.input,
+		Element:        meta.element,
+		SnapshotObject: meta.object,
+		ProviderPart:   part,
 	}
 	if err := r.publishLiveChunk(ctx, chunk); err != nil {
 		return err
+	}
+	if meta.hasObject {
+		return r.flushSnapshot(ctx, state)
 	}
 	if r.snapshotDue(state) {
 		return r.flushSnapshot(ctx, state)
@@ -127,11 +135,12 @@ func (r *Relay) complete(ctx context.Context, status AttemptStatus, reason strin
 			return err
 		}
 		if err := r.connector.CompleteAttempt(ctx, AttemptCompletion{
-			AttemptRef:   state.ref,
-			Sequence:     state.sequence,
-			Status:       status,
-			Reason:       reason,
-			SnapshotText: state.text.String(),
+			AttemptRef:     state.ref,
+			Sequence:       state.sequence,
+			Status:         status,
+			Reason:         reason,
+			SnapshotText:   state.text.String(),
+			SnapshotObject: state.object,
 		}); err != nil {
 			return err
 		}
@@ -259,9 +268,10 @@ func (r *Relay) flushSnapshot(ctx context.Context, state *attemptState) error {
 	state.lastSnapshotSequence = state.sequence
 	state.lastSnapshotTextLength = state.text.Len()
 	return r.connector.UpdateAttemptSnapshot(ctx, AttemptSnapshot{
-		AttemptRef:   state.ref,
-		Sequence:     state.sequence,
-		SnapshotText: state.text.String(),
+		AttemptRef:     state.ref,
+		Sequence:       state.sequence,
+		SnapshotText:   state.text.String(),
+		SnapshotObject: state.object,
 	})
 }
 
@@ -272,6 +282,8 @@ type partMeta struct {
 	delta      string
 	input      any
 	element    any
+	object     any
+	hasObject  bool
 	scope      Scope
 }
 
@@ -289,6 +301,15 @@ func classifyPart(defaultLane Lane, part ai.StreamPart) (Event, Lane, partMeta, 
 	case "response-metadata":
 		return EventResponseMeta, textLane, partMeta{partID: part.ID, scope: scope}, true
 	case "text-delta":
+		if part.PartialOutput != nil {
+			if defaultLane == LaneObject {
+				return EventTextDelta, LaneObject, partMeta{partID: part.ID, object: part.PartialOutput, hasObject: true, scope: scope}, true
+			}
+			return EventTextDelta, textLane, partMeta{partID: part.ID, delta: part.TextDelta, object: part.PartialOutput, hasObject: true, scope: scope}, true
+		}
+		if defaultLane == LaneObject {
+			return "", "", partMeta{}, false
+		}
 		return EventTextDelta, textLane, partMeta{partID: part.ID, delta: part.TextDelta, scope: scope}, true
 	case "reasoning-delta":
 		return EventReasoningDelta, LaneReasoning, partMeta{partID: part.ID, delta: part.ReasoningDelta, scope: scope}, true

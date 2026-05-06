@@ -113,12 +113,13 @@ type AttemptSnapshot struct {
 
 type LiveChunk struct {
 	AttemptRef
-	Event        Event         `json:"event"`
-	Sequence     int           `json:"sequence"`
-	Delta        string        `json:"delta,omitempty"`
-	Input        any           `json:"input,omitempty"`
-	Element      any           `json:"element,omitempty"`
-	ProviderPart ai.StreamPart `json:"providerPart"`
+	Event          Event         `json:"event"`
+	Sequence       int           `json:"sequence"`
+	Delta          string        `json:"delta,omitempty"`
+	Input          any           `json:"input,omitempty"`
+	Element        any           `json:"element,omitempty"`
+	SnapshotObject any           `json:"snapshotObject,omitempty"`
+	ProviderPart   ai.StreamPart `json:"providerPart"`
 }
 
 type EphemeralChunk = LiveChunk

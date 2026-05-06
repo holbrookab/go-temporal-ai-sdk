@@ -93,6 +93,7 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 	}
 
 	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	outputTracker := newPartialOutputTracker(options.ResponseFormat)
 	parts := []ai.StreamPart{}
 	for {
 		select {
@@ -110,6 +111,7 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 					Result: result,
 				}, nil
 			}
+			part, extraParts := outputTracker.enrich(part)
 			if isReturnedStreamPart(part) {
 				parts = append(parts, part)
 			}
@@ -127,6 +129,12 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 			if err := relay.Accept(ctx, part); err != nil {
 				_ = relay.Discard(ctx, err.Error())
 				return nil, err
+			}
+			for _, extra := range extraParts {
+				if err := relay.Accept(ctx, extra); err != nil {
+					_ = relay.Discard(ctx, err.Error())
+					return nil, err
+				}
 			}
 		}
 	}
