@@ -134,21 +134,22 @@ type AttemptCompletion struct {
 }
 
 type ToolLifecycleInput struct {
-	EventID          string             `json:"eventId,omitempty"`
-	StreamID         string             `json:"streamId"`
-	Event            ToolLifecycleEvent `json:"event"`
-	ToolCallID       string             `json:"toolCallId"`
-	ToolName         string             `json:"toolName"`
-	ApprovalID       string             `json:"approvalId,omitempty"`
-	Approved         *bool              `json:"approved,omitempty"`
-	Reason           string             `json:"reason,omitempty"`
-	IsAutomatic      *bool              `json:"isAutomatic,omitempty"`
-	Input            any                `json:"input,omitempty"`
-	Output           any                `json:"output,omitempty"`
-	ErrorText        string             `json:"errorText,omitempty"`
-	Dynamic          bool               `json:"dynamic,omitempty"`
-	ProviderExecuted bool               `json:"providerExecuted,omitempty"`
-	Preliminary      bool               `json:"preliminary,omitempty"`
-	Metadata         map[string]any     `json:"metadata,omitempty"`
+	EventID          string              `json:"eventId,omitempty"`
+	StreamID         string              `json:"streamId"`
+	Event            ToolLifecycleEvent  `json:"event"`
+	ToolCallID       string              `json:"toolCallId"`
+	ToolName         string              `json:"toolName"`
+	ApprovalID       string              `json:"approvalId,omitempty"`
+	Approved         *bool               `json:"approved,omitempty"`
+	Reason           string              `json:"reason,omitempty"`
+	IsAutomatic      *bool               `json:"isAutomatic,omitempty"`
+	Input            any                 `json:"input,omitempty"`
+	Output           any                 `json:"output,omitempty"`
+	ErrorText        string              `json:"errorText,omitempty"`
+	Dynamic          bool                `json:"dynamic,omitempty"`
+	ProviderExecuted bool                `json:"providerExecuted,omitempty"`
+	Preliminary      bool                `json:"preliminary,omitempty"`
+	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
+	Metadata         map[string]any      `json:"metadata,omitempty"`
 	Scope
 }
