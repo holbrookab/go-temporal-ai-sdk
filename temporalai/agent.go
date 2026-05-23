@@ -81,6 +81,7 @@ type AgentToolCall struct {
 	Dynamic          bool                `json:"dynamic,omitempty"`
 	Invalid          bool                `json:"invalid,omitempty"`
 	ErrorText        string              `json:"errorText,omitempty"`
+	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
@@ -293,6 +294,7 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 		Input:                  call.Input,
 		Messages:               messages,
 		Context:                input.ToolContext,
+		ToolMetadata:           call.ToolMetadata,
 		Lifecycle:              toolLifecycleOptions(ctx, input, call),
 		Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
 		Approval:               approval,
@@ -318,6 +320,7 @@ func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages 
 				Input:                  call.Input,
 				Messages:               messages,
 				Context:                input.ToolContext,
+				ToolMetadata:           call.ToolMetadata,
 				Lifecycle:              toolLifecycleOptions(ctx, input, call),
 				Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
 				Approval:               approval,
@@ -355,15 +358,16 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 	inputPublished := false
 	if lifecycle.StreamID != "" {
 		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:    toolApprovalEventID(call.ToolCallID, "input"),
-			StreamID:   lifecycle.StreamID,
-			Event:      streaming.ToolInputAvailable,
-			ToolCallID: call.ToolCallID,
-			ToolName:   call.ToolName,
-			Input:      call.Input,
-			Dynamic:    call.Dynamic,
-			Metadata:   metadata,
-			Scope:      lifecycle.Scope,
+			EventID:      toolApprovalEventID(call.ToolCallID, "input"),
+			StreamID:     lifecycle.StreamID,
+			Event:        streaming.ToolInputAvailable,
+			ToolCallID:   call.ToolCallID,
+			ToolName:     call.ToolName,
+			Input:        call.Input,
+			Dynamic:      call.Dynamic,
+			ToolMetadata: call.ToolMetadata,
+			Metadata:     metadata,
+			Scope:        lifecycle.Scope,
 		}, options); err != nil {
 			return nil, false, nil, err
 		}
@@ -376,6 +380,7 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 		ToolCallID:      call.ToolCallID,
 		ToolName:        call.ToolName,
 		Input:           call.Input,
+		ToolMetadata:    call.ToolMetadata,
 		Metadata:        metadata,
 		Scope:           lifecycle.Scope,
 		DurableRequired: lifecycle.DurableRequired,
@@ -392,13 +397,14 @@ func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call Age
 	result := deniedAgentToolResult(call, response.Reason)
 	if lifecycle.StreamID != "" {
 		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:    toolApprovalEventID(call.ToolCallID, "terminal"),
-			StreamID:   lifecycle.StreamID,
-			Event:      streaming.ToolOutputDenied,
-			ToolCallID: call.ToolCallID,
-			ToolName:   call.ToolName,
-			Metadata:   metadata,
-			Scope:      lifecycle.Scope,
+			EventID:      toolApprovalEventID(call.ToolCallID, "terminal"),
+			StreamID:     lifecycle.StreamID,
+			Event:        streaming.ToolOutputDenied,
+			ToolCallID:   call.ToolCallID,
+			ToolName:     call.ToolName,
+			ToolMetadata: call.ToolMetadata,
+			Metadata:     metadata,
+			Scope:        lifecycle.Scope,
 		}, options); err != nil {
 			return nil, inputPublished, nil, err
 		}
@@ -413,6 +419,7 @@ func deniedAgentToolResult(call AgentToolCall, reason string) *activities.Invoke
 		Input:            call.Input,
 		Output:           ai.ToolResultOutput{Type: "execution-denied", Reason: reason},
 		Dynamic:          call.Dynamic,
+		ToolMetadata:     call.ToolMetadata,
 		ProviderMetadata: call.ProviderMetadata,
 	}
 }
@@ -662,6 +669,7 @@ func extractToolCalls(parts []activities.Part, stepID string, stepNumber int, st
 			Dynamic:          part.Dynamic,
 			Invalid:          invalid,
 			ErrorText:        errorText,
+			ToolMetadata:     part.ToolMetadata,
 			ProviderMetadata: part.ProviderMetadata,
 		})
 	}
@@ -682,6 +690,7 @@ func toolResultParts(results []activities.InvokeToolResult) []activities.Part {
 			Dynamic:          result.Dynamic,
 			ProviderExecuted: result.ProviderExecuted,
 			Preliminary:      result.Preliminary,
+			ToolMetadata:     result.ToolMetadata,
 			ProviderMetadata: result.ProviderMetadata,
 		})
 	}
@@ -732,6 +741,7 @@ func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *act
 				ToolName:         part.ToolName,
 				Input:            toolCallInputFromRaw(input),
 				InputRaw:         input,
+				ToolMetadata:     part.ToolMetadata,
 				ProviderMetadata: part.ProviderMetadata,
 			})
 		case "finish":

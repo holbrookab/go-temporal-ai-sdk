@@ -66,6 +66,7 @@ func RunWithToolLifecycle(ctx context.Context, opts ToolLifecycleActivityOptions
 		Dynamic:          terminal.Dynamic,
 		ProviderExecuted: terminal.ProviderExecuted,
 		Preliminary:      terminal.Preliminary,
+		ToolMetadata:     start.ToolMetadata,
 		Metadata:         start.Metadata,
 		Scope:            start.Scope,
 	}

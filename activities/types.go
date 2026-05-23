@@ -59,6 +59,7 @@ type ToolDefinition struct {
 	Strict            *bool                 `json:"strict,omitempty"`
 	ProviderOptions   ai.ProviderOptions    `json:"providerOptions,omitempty"`
 	ProviderMetadata  ai.ProviderMetadata   `json:"providerMetadata,omitempty"`
+	ToolMetadata      ai.ProviderMetadata   `json:"toolMetadata,omitempty"`
 	Type              string                `json:"type,omitempty"`
 	ID                string                `json:"id,omitempty"`
 	Args              any                   `json:"args,omitempty"`
@@ -72,6 +73,7 @@ type InvokeToolArgs struct {
 	Input                  any                  `json:"input,omitempty"`
 	Messages               []Message            `json:"messages,omitempty"`
 	Context                any                  `json:"context,omitempty"`
+	ToolMetadata           ai.ProviderMetadata  `json:"toolMetadata,omitempty"`
 	Lifecycle              ToolLifecycleOptions `json:"lifecycle,omitempty"`
 	Artifacts              *ToolArtifactPolicy  `json:"artifacts,omitempty"`
 	Approval               *ToolApprovalState   `json:"approval,omitempty"`
@@ -101,6 +103,7 @@ type InvokeToolResult struct {
 	Dynamic          bool                `json:"dynamic,omitempty"`
 	ProviderExecuted bool                `json:"providerExecuted,omitempty"`
 	Preliminary      bool                `json:"preliminary,omitempty"`
+	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 

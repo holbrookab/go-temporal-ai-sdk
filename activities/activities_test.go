@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
@@ -90,6 +91,47 @@ func TestInvokeToolUsesRegisteredTool(t *testing.T) {
 	}
 	if result.Output.Value != "found temporal" {
 		t.Fatalf("output = %#v", result.Output)
+	}
+}
+
+func TestInvokeToolPropagatesToolMetadataAndSandbox(t *testing.T) {
+	sandbox := testSandbox{}
+	toolMetadata := ai.ProviderMetadata{"client": map[string]any{"source": "mcp"}}
+	callMetadata := ai.ProviderMetadata{"call": "model"}
+	var seenCall ai.ToolCall
+	var seenOptions ai.ToolExecutionOptions
+	acts := New(Options{
+		Sandbox: sandbox,
+		Tools: map[string]ai.Tool{
+			"lookup": {
+				ToolMetadata: toolMetadata,
+				InputSchema:  map[string]any{"type": "object"},
+				Execute: func(_ context.Context, call ai.ToolCall, opts ai.ToolExecutionOptions) (any, error) {
+					seenCall = call
+					seenOptions = opts
+					return "ok", nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID:   "call-1",
+		ToolName:     "lookup",
+		Input:        map[string]any{},
+		ToolMetadata: callMetadata,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(seenCall.ToolMetadata["client"], toolMetadata["client"]) || seenCall.ToolMetadata["call"] != "model" {
+		t.Fatalf("call tool metadata = %#v", seenCall.ToolMetadata)
+	}
+	if seenOptions.Sandbox != sandbox {
+		t.Fatalf("sandbox = %#v", seenOptions.Sandbox)
+	}
+	if !reflect.DeepEqual(result.ToolMetadata, seenCall.ToolMetadata) {
+		t.Fatalf("result tool metadata = %#v", result.ToolMetadata)
 	}
 }
 
@@ -209,21 +251,35 @@ func TestInvokeToolAddsLifecycleScopeToExecutionContext(t *testing.T) {
 }
 
 func TestToolDefinitionPreservesRequiresApproval(t *testing.T) {
-	definition := ToolDefinitionFromAI("write", ai.Tool{RequiresApproval: true})
+	toolMetadata := ai.ProviderMetadata{"client": "mcp"}
+	definition := ToolDefinitionFromAI("write", ai.Tool{RequiresApproval: true, ToolMetadata: toolMetadata})
 	if !definition.RequiresApproval {
 		t.Fatalf("requires approval was not copied: %#v", definition)
 	}
-	if !definition.ToAI().RequiresApproval {
+	if !reflect.DeepEqual(definition.ToolMetadata, toolMetadata) {
+		t.Fatalf("tool metadata was not copied: %#v", definition)
+	}
+	modelTool := definition.ToModelTool()
+	if !reflect.DeepEqual(modelTool.ToolMetadata, toolMetadata) {
+		t.Fatalf("model tool metadata was not copied: %#v", modelTool)
+	}
+	tool := definition.ToAI()
+	if !tool.RequiresApproval {
 		t.Fatalf("requires approval was not restored to AI tool")
+	}
+	if !reflect.DeepEqual(tool.ToolMetadata, toolMetadata) {
+		t.Fatalf("tool metadata was not restored to AI tool: %#v", tool.ToolMetadata)
 	}
 }
 
 func TestInvokeToolPublishesRequiredDurableLifecycle(t *testing.T) {
 	connector := &recordingConnector{}
+	toolMetadata := ai.ProviderMetadata{"client": "mcp"}
 	acts := New(Options{
 		StreamConnector: connector,
 		Tools: map[string]ai.Tool{
 			"lookup": {
+				ToolMetadata: toolMetadata,
 				Execute: func(_ context.Context, call ai.ToolCall, _ ai.ToolExecutionOptions) (any, error) {
 					return "found " + call.Input.(map[string]any)["query"].(string), nil
 				},
@@ -256,8 +312,50 @@ func TestInvokeToolPublishesRequiredDurableLifecycle(t *testing.T) {
 	if connector.toolDurable[0].Event != streaming.ToolInputAvailable || connector.toolDurable[0].EventID != "tool:call-1:input" {
 		t.Fatalf("input lifecycle = %#v", connector.toolDurable[0])
 	}
+	if !reflect.DeepEqual(connector.toolDurable[0].ToolMetadata, toolMetadata) {
+		t.Fatalf("input lifecycle tool metadata = %#v", connector.toolDurable[0].ToolMetadata)
+	}
 	if connector.toolDurable[1].Event != streaming.ToolOutputAvailable || connector.toolDurable[1].EventID != "tool:call-1:terminal" {
 		t.Fatalf("terminal lifecycle = %#v", connector.toolDurable[1])
+	}
+	if !reflect.DeepEqual(connector.toolDurable[1].ToolMetadata, toolMetadata) {
+		t.Fatalf("terminal lifecycle tool metadata = %#v", connector.toolDurable[1].ToolMetadata)
+	}
+}
+
+func TestInvokeToolPreservesToolResultFiles(t *testing.T) {
+	connector := &recordingConnector{}
+	file := ai.ToolResultFile{URL: "https://example.test/report.pdf", MediaType: "application/pdf", Filename: "report.pdf"}
+	acts := New(Options{
+		StreamConnector: connector,
+		Tools: map[string]ai.Tool{
+			"report": {
+				InputSchema: map[string]any{"type": "object"},
+				ToModelOutput: func(string, any, any) (ai.ToolResultOutput, error) {
+					return ai.ToolResultOutput{Type: "json", Value: map[string]any{"ok": true}, Files: []ai.ToolResultFile{file}}, nil
+				},
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					return map[string]any{"ok": true}, nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "report",
+		Input:      map[string]any{},
+		Lifecycle:  ToolLifecycleOptions{StreamID: "stream-1", DurableRequired: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Output.Files, []ai.ToolResultFile{file}) {
+		t.Fatalf("result files = %#v", result.Output.Files)
+	}
+	terminal, ok := connector.toolDurable[1].Output.(ai.ToolResultOutput)
+	if !ok || !reflect.DeepEqual(terminal.Files, []ai.ToolResultFile{file}) {
+		t.Fatalf("terminal files = %#v", connector.toolDurable[1].Output)
 	}
 }
 
@@ -648,6 +746,52 @@ func TestWirePreservesTextAndFileProviderMetadata(t *testing.T) {
 	}
 }
 
+func TestWirePreservesToolMetadataAndPerformance(t *testing.T) {
+	toolMetadata := ai.ProviderMetadata{"client": "mcp"}
+	providerMetadata := ai.ProviderMetadata{"provider": "mock"}
+
+	callWire := PartFromAI(ai.ToolCallPart{
+		ToolCallID:       "call-1",
+		ToolName:         "lookup",
+		Input:            map[string]any{"query": "temporal"},
+		ToolMetadata:     toolMetadata,
+		ProviderMetadata: providerMetadata,
+	})
+	if !reflect.DeepEqual(callWire.ToolMetadata, toolMetadata) {
+		t.Fatalf("tool-call wire metadata = %#v", callWire.ToolMetadata)
+	}
+	callAI, ok := callWire.ToAI().(ai.ToolCallPart)
+	if !ok || !reflect.DeepEqual(callAI.ToolMetadata, toolMetadata) {
+		t.Fatalf("tool-call ToAI metadata = %#v", callWire.ToAI())
+	}
+
+	resultWire := PartFromAI(ai.ToolResultPart{
+		ToolCallID:       "call-1",
+		ToolName:         "lookup",
+		Output:           ai.ToolResultOutput{Type: "text", Value: "ok"},
+		ToolMetadata:     toolMetadata,
+		ProviderMetadata: providerMetadata,
+	})
+	resultAI, ok := resultWire.ToAI().(ai.ToolResultPart)
+	if !ok || !reflect.DeepEqual(resultAI.ToolMetadata, toolMetadata) {
+		t.Fatalf("tool-result ToAI metadata = %#v", resultWire.ToAI())
+	}
+
+	performance := ai.StepPerformance{StepTime: 2 * time.Second, TimeToFirstOutputToken: 25 * time.Millisecond}
+	streamWire := StreamPartFromAI(ai.StreamPart{
+		Type:         "finish-step",
+		Performance:  performance,
+		ToolMetadata: toolMetadata,
+	})
+	if streamWire.Performance.StepTime != performance.StepTime || !reflect.DeepEqual(streamWire.ToolMetadata, toolMetadata) {
+		t.Fatalf("stream wire = %#v", streamWire)
+	}
+	streamAI := streamWire.ToAI()
+	if streamAI.Performance.StepTime != performance.StepTime || !reflect.DeepEqual(streamAI.ToolMetadata, toolMetadata) {
+		t.Fatalf("stream ToAI = %#v", streamAI)
+	}
+}
+
 func TestInvokeModelStreamDiscardsErroredStream(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
@@ -691,6 +835,20 @@ type recordingConnector struct {
 	toolLive               []streaming.ToolLifecycleInput
 	toolPersistErrForEvent map[streaming.ToolLifecycleEvent]error
 	toolLiveErr            error
+}
+
+type testSandbox struct{}
+
+func (testSandbox) RunCommand(context.Context, ai.SandboxCommand) (ai.SandboxCommandResult, error) {
+	return ai.SandboxCommandResult{Stdout: "ok"}, nil
+}
+
+func (testSandbox) ReadFile(context.Context, string) ([]byte, error) {
+	return []byte("ok"), nil
+}
+
+func (testSandbox) WriteFile(context.Context, string, []byte) error {
+	return nil
 }
 
 type recordingArtifactStore struct {

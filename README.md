@@ -103,6 +103,7 @@ connector := redisdynamodb.New(redisdynamodb.Options{
 acts := activities.New(activities.Options{
     ModelProvider:   provider,
     StreamConnector: connector,
+    Sandbox:         sandbox,
     Tools: map[string]ai.Tool{
         "lookup": lookupTool,
     },
@@ -110,6 +111,10 @@ acts := activities.New(activities.Options{
 
 temporalai.RegisterActivities(worker, acts)
 ```
+
+`Sandbox` is worker-owned configuration. It is passed to `go-ai` tool
+executions as `ai.ToolExecutionOptions.Sandbox`, but it is not serialized through
+workflow inputs because sandbox implementations are process-local interfaces.
 
 ## Workflow Usage
 
@@ -300,6 +305,10 @@ default OS cache:
 ```bash
 GOCACHE=$PWD/.cache/go-build go test ./...
 ```
+
+`go-ai` provider packages are imported by workers directly. New providers in
+`go-ai` releases, such as Anthropic or community OpenRouter, do not require an
+SDK registry change as long as they satisfy the normal `ai.Provider` interface.
 
 ## License
 

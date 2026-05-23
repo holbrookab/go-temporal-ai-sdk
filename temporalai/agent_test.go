@@ -75,10 +75,11 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 				}
 				return &activities.InvokeModelResult{
 					Content: []activities.Part{{
-						Type:       "tool-call",
-						ToolCallID: "call-1",
-						ToolName:   "lookup",
-						Input:      map[string]any{"query": "temporal"},
+						Type:         "tool-call",
+						ToolCallID:   "call-1",
+						ToolName:     "lookup",
+						Input:        map[string]any{"query": "temporal"},
+						ToolMetadata: ai.ProviderMetadata{"client": "mcp"},
 					}},
 					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
 				}, nil
@@ -102,12 +103,16 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 			if args.Lifecycle.StreamID != "stream-1" || !args.Lifecycle.DurableRequired {
 				t.Fatalf("tool lifecycle = %#v", args.Lifecycle)
 			}
+			if args.ToolMetadata["client"] != "mcp" {
+				t.Fatalf("tool metadata = %#v", args.ToolMetadata)
+			}
 			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "text", Value: "lookup output"},
-				Result:     "lookup output",
+				ToolCallID:   args.ToolCallID,
+				ToolName:     args.ToolName,
+				Input:        args.Input,
+				Output:       ai.ToolResultOutput{Type: "text", Value: "lookup output"},
+				Result:       "lookup output",
+				ToolMetadata: args.ToolMetadata,
 			}, nil
 		},
 		activity.RegisterOptions{Name: activities.InvokeToolActivity},
@@ -148,6 +153,12 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	}
 	if modelCalls != 2 {
 		t.Fatalf("model calls = %d", modelCalls)
+	}
+	if result.Steps[0].ToolCalls[0].ToolMetadata["client"] != "mcp" {
+		t.Fatalf("tool call metadata = %#v", result.Steps[0].ToolCalls[0].ToolMetadata)
+	}
+	if result.Steps[0].ToolResults[0].ToolMetadata["client"] != "mcp" {
+		t.Fatalf("tool result metadata = %#v", result.Steps[0].ToolResults[0].ToolMetadata)
 	}
 }
 

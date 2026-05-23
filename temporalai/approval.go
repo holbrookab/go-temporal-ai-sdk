@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
 	"go.temporal.io/sdk/workflow"
@@ -20,15 +21,16 @@ type AgentToolApprovalOptions struct {
 }
 
 type ToolApprovalRequest struct {
-	StreamID        string         `json:"streamId,omitempty"`
-	ApprovalID      string         `json:"approvalId"`
-	ToolCallID      string         `json:"toolCallId"`
-	ToolName        string         `json:"toolName"`
-	Input           any            `json:"input,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	DurableRequired bool           `json:"durableRequired,omitempty"`
-	Timeout         time.Duration  `json:"timeout,omitempty"`
-	SignalName      string         `json:"signalName,omitempty"`
+	StreamID        string              `json:"streamId,omitempty"`
+	ApprovalID      string              `json:"approvalId"`
+	ToolCallID      string              `json:"toolCallId"`
+	ToolName        string              `json:"toolName"`
+	Input           any                 `json:"input,omitempty"`
+	ToolMetadata    ai.ProviderMetadata `json:"toolMetadata,omitempty"`
+	Metadata        map[string]any      `json:"metadata,omitempty"`
+	DurableRequired bool                `json:"durableRequired,omitempty"`
+	Timeout         time.Duration       `json:"timeout,omitempty"`
+	SignalName      string              `json:"signalName,omitempty"`
 	streaming.Scope
 }
 
@@ -53,15 +55,16 @@ func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, acti
 	}
 	if request.StreamID != "" {
 		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:    toolApprovalEventID(request.ToolCallID, "approval-request"),
-			StreamID:   request.StreamID,
-			Event:      streaming.ToolApprovalRequest,
-			ToolCallID: request.ToolCallID,
-			ToolName:   request.ToolName,
-			ApprovalID: request.ApprovalID,
-			Input:      request.Input,
-			Metadata:   request.Metadata,
-			Scope:      request.Scope,
+			EventID:      toolApprovalEventID(request.ToolCallID, "approval-request"),
+			StreamID:     request.StreamID,
+			Event:        streaming.ToolApprovalRequest,
+			ToolCallID:   request.ToolCallID,
+			ToolName:     request.ToolName,
+			ApprovalID:   request.ApprovalID,
+			Input:        request.Input,
+			ToolMetadata: request.ToolMetadata,
+			Metadata:     request.Metadata,
+			Scope:        request.Scope,
 		}, activityOptions...); err != nil {
 			return nil, err
 		}
@@ -69,16 +72,17 @@ func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, acti
 	response := waitForToolApprovalResponse(ctx, request)
 	if request.StreamID != "" {
 		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:    toolApprovalEventID(request.ToolCallID, "approval-response"),
-			StreamID:   request.StreamID,
-			Event:      streaming.ToolApprovalResponse,
-			ToolCallID: request.ToolCallID,
-			ToolName:   request.ToolName,
-			ApprovalID: request.ApprovalID,
-			Approved:   &response.Approved,
-			Reason:     response.Reason,
-			Metadata:   request.Metadata,
-			Scope:      request.Scope,
+			EventID:      toolApprovalEventID(request.ToolCallID, "approval-response"),
+			StreamID:     request.StreamID,
+			Event:        streaming.ToolApprovalResponse,
+			ToolCallID:   request.ToolCallID,
+			ToolName:     request.ToolName,
+			ApprovalID:   request.ApprovalID,
+			Approved:     &response.Approved,
+			Reason:       response.Reason,
+			ToolMetadata: request.ToolMetadata,
+			Metadata:     request.Metadata,
+			Scope:        request.Scope,
 		}, activityOptions...); err != nil {
 			return nil, err
 		}

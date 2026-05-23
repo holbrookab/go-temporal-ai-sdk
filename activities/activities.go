@@ -15,6 +15,7 @@ type Options struct {
 	StreamConnector streaming.Connector
 	Tools           map[string]ai.Tool
 	ArtifactStore   ToolArtifactStore
+	Sandbox         ai.Sandbox
 }
 
 type Activities struct {
@@ -22,6 +23,7 @@ type Activities struct {
 	connector streaming.Connector
 	tools     map[string]ai.Tool
 	artifacts ToolArtifactStore
+	sandbox   ai.Sandbox
 }
 
 func New(opts Options) *Activities {
@@ -34,6 +36,7 @@ func New(opts Options) *Activities {
 		connector: connector,
 		tools:     opts.Tools,
 		artifacts: opts.ArtifactStore,
+		sandbox:   opts.Sandbox,
 	}
 }
 

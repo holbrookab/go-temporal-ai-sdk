@@ -56,6 +56,7 @@ type Part struct {
 	SourceType       string              `json:"sourceType,omitempty"`
 	URL              string              `json:"url,omitempty"`
 
+	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 	ProviderOptions  ai.ProviderOptions  `json:"providerOptions,omitempty"`
 }
@@ -103,6 +104,8 @@ type StreamPart struct {
 	Warnings         []ai.Warning        `json:"warnings,omitempty"`
 	Request          RequestMetadata     `json:"request,omitempty"`
 	Response         ResponseMetadata    `json:"response,omitempty"`
+	Performance      ai.StepPerformance  `json:"performance,omitempty"`
+	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 	Raw              any                 `json:"raw,omitempty"`
 	AbortReason      string              `json:"abortReason,omitempty"`
@@ -256,9 +259,9 @@ func PartFromAI(part ai.Part) Part {
 		if part.Error != nil {
 			errorText = part.Error.Error()
 		}
-		return Part{Type: "tool-call", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, ErrorText: errorText, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return Part{Type: "tool-call", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, ErrorText: errorText, Title: part.Title, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.ToolResultPart:
-		return Part{Type: "tool-result", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return Part{Type: "tool-result", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.SourcePart:
 		return Part{Type: "source", ID: part.ID, SourceType: part.SourceType, URL: part.URL, Title: part.Title}
 	default:
@@ -277,9 +280,9 @@ func (part Part) ToAI() ai.Part {
 	case "reasoning-file":
 		return ai.ReasoningFilePart{Data: part.Data, MediaType: part.MediaType, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-call":
-		return ai.ToolCallPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, Title: part.Title, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return ai.ToolCallPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, Title: part.Title, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-result":
-		return ai.ToolResultPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+		return ai.ToolResultPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "source":
 		return ai.SourcePart{ID: part.ID, SourceType: part.SourceType, URL: part.URL, Title: part.Title}
 	default:
@@ -333,6 +336,7 @@ func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMe
 				ToolName:         part.ToolName,
 				Input:            toolCallInputFromRaw(nil, input),
 				InputRaw:         input,
+				ToolMetadata:     part.ToolMetadata,
 				ProviderMetadata: part.ProviderMetadata,
 			})
 		case "file", "source":
@@ -408,6 +412,8 @@ func StreamPartFromAI(part ai.StreamPart) StreamPart {
 		Warnings:         part.Warnings,
 		Request:          part.Request,
 		Response:         ResponseMetadataFromAI(part.Response),
+		Performance:      part.Performance,
+		ToolMetadata:     part.ToolMetadata,
 		ProviderMetadata: part.ProviderMetadata,
 		Raw:              part.Raw,
 		AbortReason:      part.AbortReason,
@@ -451,6 +457,8 @@ func (part StreamPart) ToAI() ai.StreamPart {
 		Warnings:         part.Warnings,
 		Request:          part.Request,
 		Response:         part.Response.ToAI(),
+		Performance:      part.Performance,
+		ToolMetadata:     part.ToolMetadata,
 		ProviderMetadata: part.ProviderMetadata,
 		Raw:              part.Raw,
 		AbortReason:      part.AbortReason,
