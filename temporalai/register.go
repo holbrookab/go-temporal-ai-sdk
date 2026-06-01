@@ -8,6 +8,7 @@ import (
 
 func RegisterActivities(w worker.Worker, acts *activities.Activities) {
 	w.RegisterActivityWithOptions(acts.InvokeModel, activity.RegisterOptions{Name: activities.InvokeModelActivity})
+	w.RegisterActivityWithOptions(acts.GenerateObject, activity.RegisterOptions{Name: activities.GenerateObjectActivity})
 	w.RegisterActivityWithOptions(acts.InvokeModelStream, activity.RegisterOptions{Name: activities.InvokeModelStreamActivity})
 	w.RegisterActivityWithOptions(acts.InvokeEmbeddingModel, activity.RegisterOptions{Name: activities.InvokeEmbeddingModelActivity})
 	w.RegisterActivityWithOptions(acts.InvokeTool, activity.RegisterOptions{Name: activities.InvokeToolActivity})

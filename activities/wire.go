@@ -25,6 +25,33 @@ type LanguageModelCallOptions struct {
 	Headers          map[string]string  `json:"headers,omitempty"`
 }
 
+type GenerateObjectOptions struct {
+	Output                string             `json:"output,omitempty"`
+	Mode                  string             `json:"mode,omitempty"`
+	Schema                any                `json:"schema,omitempty"`
+	SchemaName            string             `json:"schemaName,omitempty"`
+	SchemaDescription     string             `json:"schemaDescription,omitempty"`
+	Enum                  []string           `json:"enum,omitempty"`
+	Instructions          string             `json:"instructions,omitempty"`
+	System                string             `json:"system,omitempty"`
+	Prompt                string             `json:"prompt,omitempty"`
+	Messages              []Message          `json:"messages,omitempty"`
+	AllowSystemInMessages bool               `json:"allowSystemInMessages,omitempty"`
+	MaxRetries            *int               `json:"maxRetries,omitempty"`
+	Timeout               ai.TimeoutConfig   `json:"timeout,omitempty"`
+	Headers               map[string]string  `json:"headers,omitempty"`
+	ProviderOptions       ai.ProviderOptions `json:"providerOptions,omitempty"`
+	MaxOutputTokens       *int               `json:"maxOutputTokens,omitempty"`
+	Temperature           *float64           `json:"temperature,omitempty"`
+	TopP                  *float64           `json:"topP,omitempty"`
+	TopK                  *float64           `json:"topK,omitempty"`
+	PresencePenalty       *float64           `json:"presencePenalty,omitempty"`
+	FrequencyPenalty      *float64           `json:"frequencyPenalty,omitempty"`
+	StopSequences         []string           `json:"stopSequences,omitempty"`
+	Seed                  *int               `json:"seed,omitempty"`
+	Reasoning             string             `json:"reasoning,omitempty"`
+}
+
 type Message struct {
 	Role            ai.Role            `json:"role"`
 	Content         []Part             `json:"content,omitempty"`
@@ -69,6 +96,19 @@ type LanguageModelGenerateResult struct {
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 	Request          RequestMetadata     `json:"request,omitempty"`
 	Response         ResponseMetadata    `json:"response,omitempty"`
+}
+
+type GenerateObjectResult struct {
+	Object           any                 `json:"object,omitempty"`
+	FinishReason     string              `json:"finishReason,omitempty"`
+	RawFinishReason  string              `json:"rawFinishReason,omitempty"`
+	Usage            ai.Usage            `json:"usage,omitempty"`
+	Warnings         []ai.Warning        `json:"warnings,omitempty"`
+	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
+	Request          RequestMetadata     `json:"request,omitempty"`
+	Response         ResponseMetadata    `json:"response,omitempty"`
+	Reasoning        string              `json:"reasoning,omitempty"`
+	Text             string              `json:"text,omitempty"`
 }
 
 type RequestMetadata = ai.RequestMetadata
@@ -188,6 +228,65 @@ func (options LanguageModelCallOptions) ToAI() ai.LanguageModelCallOptions {
 	}
 }
 
+func GenerateObjectOptionsFromAI(options ai.GenerateObjectOptions) GenerateObjectOptions {
+	return GenerateObjectOptions{
+		Output:                options.Output,
+		Mode:                  options.Mode,
+		Schema:                options.Schema,
+		SchemaName:            options.SchemaName,
+		SchemaDescription:     options.SchemaDescription,
+		Enum:                  options.Enum,
+		Instructions:          options.Instructions,
+		System:                options.System,
+		Prompt:                options.Prompt,
+		Messages:              MessagesFromAI(options.Messages),
+		AllowSystemInMessages: options.AllowSystemInMessages,
+		MaxRetries:            options.MaxRetries,
+		Timeout:               options.Timeout,
+		Headers:               options.Headers,
+		ProviderOptions:       options.ProviderOptions,
+		MaxOutputTokens:       options.MaxOutputTokens,
+		Temperature:           options.Temperature,
+		TopP:                  options.TopP,
+		TopK:                  options.TopK,
+		PresencePenalty:       options.PresencePenalty,
+		FrequencyPenalty:      options.FrequencyPenalty,
+		StopSequences:         options.StopSequences,
+		Seed:                  options.Seed,
+		Reasoning:             options.Reasoning,
+	}
+}
+
+func (options GenerateObjectOptions) ToAI(model ai.LanguageModel) ai.GenerateObjectOptions {
+	return ai.GenerateObjectOptions{
+		Model:                 model,
+		Output:                options.Output,
+		Mode:                  options.Mode,
+		Schema:                options.Schema,
+		SchemaName:            options.SchemaName,
+		SchemaDescription:     options.SchemaDescription,
+		Enum:                  options.Enum,
+		Instructions:          options.Instructions,
+		System:                options.System,
+		Prompt:                options.Prompt,
+		Messages:              MessagesToAI(options.Messages),
+		AllowSystemInMessages: options.AllowSystemInMessages,
+		MaxRetries:            options.MaxRetries,
+		Timeout:               options.Timeout,
+		Headers:               options.Headers,
+		ProviderOptions:       options.ProviderOptions,
+		MaxOutputTokens:       options.MaxOutputTokens,
+		Temperature:           options.Temperature,
+		TopP:                  options.TopP,
+		TopK:                  options.TopK,
+		PresencePenalty:       options.PresencePenalty,
+		FrequencyPenalty:      options.FrequencyPenalty,
+		StopSequences:         options.StopSequences,
+		Seed:                  options.Seed,
+		Reasoning:             options.Reasoning,
+	}
+}
+
 func MessagesFromAI(messages []ai.Message) []Message {
 	if len(messages) == 0 {
 		return nil
@@ -302,6 +401,39 @@ func GenerateResultFromAI(result *ai.LanguageModelGenerateResult) *LanguageModel
 		ProviderMetadata: result.ProviderMetadata,
 		Request:          result.Request,
 		Response:         ResponseMetadataFromAI(result.Response),
+	}
+}
+
+func GenerateObjectResultFromAI(result *ai.GenerateObjectResult) *GenerateObjectResult {
+	if result == nil {
+		return nil
+	}
+	return &GenerateObjectResult{
+		Object:           result.Object,
+		FinishReason:     result.FinishReason,
+		RawFinishReason:  result.RawFinishReason,
+		Usage:            result.Usage,
+		Warnings:         result.Warnings,
+		ProviderMetadata: result.ProviderMetadata,
+		Request:          result.Request,
+		Response:         ResponseMetadataFromAI(result.Response),
+		Reasoning:        result.Reasoning,
+		Text:             result.Text,
+	}
+}
+
+func (result GenerateObjectResult) ToAI() ai.GenerateObjectResult {
+	return ai.GenerateObjectResult{
+		Object:           result.Object,
+		FinishReason:     result.FinishReason,
+		RawFinishReason:  result.RawFinishReason,
+		Usage:            result.Usage,
+		Warnings:         result.Warnings,
+		ProviderMetadata: result.ProviderMetadata,
+		Request:          result.Request,
+		Response:         result.Response.ToAI(),
+		Reasoning:        result.Reasoning,
+		Text:             result.Text,
 	}
 }
 

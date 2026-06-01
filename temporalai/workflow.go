@@ -30,6 +30,10 @@ func languageModelActivityOptions(options ActivityOptions) workflow.ActivityOpti
 	return mergeActivityOptions(defaultActivityOptions(activities.InvokeModelActivity), mergeActivityOptions(options.Default, options.LanguageModel))
 }
 
+func generateObjectActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(activities.GenerateObjectActivity), mergeActivityOptions(options.Default, options.LanguageModel))
+}
+
 func embeddingModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
 	return mergeActivityOptions(defaultActivityOptions(activities.InvokeEmbeddingModelActivity), mergeActivityOptions(options.Default, options.EmbeddingModel))
 }
@@ -48,6 +52,14 @@ func defaultLocalLanguageModelActivityOptions() workflow.LocalActivityOptions {
 
 func localLanguageModelActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
 	return mergeLocalActivityOptions(defaultLocalLanguageModelActivityOptions(), options.LocalLanguageModel)
+}
+
+func defaultLocalGenerateObjectActivityOptions() workflow.LocalActivityOptions {
+	return workflow.LocalActivityOptions{StartToCloseTimeout: 10 * time.Minute, Summary: activities.GenerateObjectActivity}
+}
+
+func localGenerateObjectActivityOptions(options ActivityOptions) workflow.LocalActivityOptions {
+	return mergeLocalActivityOptions(defaultLocalGenerateObjectActivityOptions(), options.LocalLanguageModel)
 }
 
 func defaultLocalEmbeddingModelActivityOptions() workflow.LocalActivityOptions {
@@ -87,6 +99,31 @@ func InvokeModel(ctx workflow.Context, modelID string, options ai.LanguageModelC
 	} else {
 		ctx = workflow.WithActivityOptions(ctx, languageModelActivityOptions(ao))
 		err = workflow.ExecuteActivity(ctx, activities.InvokeModelActivity, args).Get(ctx, &wireResult)
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := wireResult.ToAI()
+	return &result, nil
+}
+
+func GenerateObject(ctx workflow.Context, modelID string, options ai.GenerateObjectOptions, activityOptions ...ActivityOptions) (*ai.GenerateObjectResult, error) {
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	var wireResult activities.GenerateObjectResult
+	args := activities.GenerateObjectArgs{
+		ModelID: modelID,
+		Options: activities.GenerateObjectOptionsFromAI(options),
+	}
+	var err error
+	if ao.LanguageModelBoundary == activities.ToolExecutionBoundaryLocalActivity {
+		ctx = workflow.WithLocalActivityOptions(ctx, localGenerateObjectActivityOptions(ao))
+		err = workflow.ExecuteLocalActivity(ctx, activities.GenerateObjectActivity, args).Get(ctx, &wireResult)
+	} else {
+		ctx = workflow.WithActivityOptions(ctx, generateObjectActivityOptions(ao))
+		err = workflow.ExecuteActivity(ctx, activities.GenerateObjectActivity, args).Get(ctx, &wireResult)
 	}
 	if err != nil {
 		return nil, err

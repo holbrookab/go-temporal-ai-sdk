@@ -42,6 +42,45 @@ func TestInvokeModelDelegatesToProvider(t *testing.T) {
 	}
 }
 
+func TestGenerateObjectDelegatesToGenerateObject(t *testing.T) {
+	model := ai.NewMockLanguageModel("model-1")
+	model.GenerateFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
+		if opts.ResponseFormat == nil || opts.ResponseFormat.Type != "json" {
+			t.Fatalf("response format = %#v", opts.ResponseFormat)
+		}
+		if opts.ProviderOptions["source"] != "test" {
+			t.Fatalf("provider options = %#v", opts.ProviderOptions)
+		}
+		return &ai.LanguageModelGenerateResult{
+			Content:      []ai.Part{ai.TextPart{Text: `{"name":"Ada"}`}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop, Raw: "stop"},
+			Response:     ai.ResponseMetadata{ID: "response-1"},
+		}, nil
+	}
+	acts := New(Options{ModelProvider: ai.CustomProvider{
+		LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+	}})
+
+	result, err := acts.GenerateObject(context.Background(), GenerateObjectArgs{
+		ModelID: "model-1",
+		Options: GenerateObjectOptionsFromAI(ai.GenerateObjectOptions{
+			Prompt:          "return json",
+			Schema:          map[string]any{"type": "object"},
+			ProviderOptions: ai.ProviderOptions{"source": "test"},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, ok := result.Object.(map[string]any)
+	if !ok || object["name"] != "Ada" {
+		t.Fatalf("object = %#v", result.Object)
+	}
+	if result.Text != `{"name":"Ada"}` || result.Response.ID != "response-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestInvokeEmbeddingModelDelegatesToProvider(t *testing.T) {
 	model := ai.NewMockEmbeddingModel("embed-1")
 	acts := New(Options{ModelProvider: ai.CustomProvider{

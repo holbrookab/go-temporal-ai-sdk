@@ -95,9 +95,97 @@ func TestInvokeModelCanRunAsLocalActivity(t *testing.T) {
 	}
 }
 
+func TestGenerateObjectWorkflowHelper(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.GenerateObjectArgs) (*activities.GenerateObjectResult, error) {
+			if args.ModelID != "model-1" {
+				t.Fatalf("model = %q", args.ModelID)
+			}
+			if args.Options.SchemaName != "profile" {
+				t.Fatalf("schema name = %q", args.Options.SchemaName)
+			}
+			return &activities.GenerateObjectResult{
+				Object:       map[string]any{"name": "Ada"},
+				FinishReason: ai.FinishStop,
+			}, nil
+		},
+		activityRegisterOptions(activities.GenerateObjectActivity),
+	)
+
+	env.ExecuteWorkflow(testGenerateObjectWorkflow)
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result string
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result != "Ada" {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+func TestGenerateObjectCanRunAsLocalActivity(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var regularStarts int
+	var localStarts int
+	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == activities.GenerateObjectActivity {
+			regularStarts++
+		}
+	})
+	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
+		if info.ActivityType.Name == activities.GenerateObjectActivity {
+			localStarts++
+		}
+	})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.GenerateObjectArgs) (*activities.GenerateObjectResult, error) {
+			if args.ModelID != "model-1" {
+				t.Fatalf("model = %q", args.ModelID)
+			}
+			return &activities.GenerateObjectResult{
+				Object:       map[string]any{"name": "Grace"},
+				FinishReason: ai.FinishStop,
+			}, nil
+		},
+		activityRegisterOptions(activities.GenerateObjectActivity),
+	)
+
+	env.ExecuteWorkflow(testGenerateObjectLocalWorkflow)
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result string
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result != "Grace" {
+		t.Fatalf("result = %q", result)
+	}
+	if localStarts != 1 {
+		t.Fatalf("local object starts = %d, want 1", localStarts)
+	}
+	if regularStarts != 0 {
+		t.Fatalf("regular object starts = %d, want 0", regularStarts)
+	}
+}
+
 func TestInvokeActivityOptionsDefaultSummaries(t *testing.T) {
 	if got := languageModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelActivity {
 		t.Fatalf("language model summary = %q", got)
+	}
+	if got := generateObjectActivityOptions(ActivityOptions{}).Summary; got != activities.GenerateObjectActivity {
+		t.Fatalf("object summary = %q", got)
 	}
 	if got := streamModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelStreamActivity {
 		t.Fatalf("stream model summary = %q", got)
@@ -114,6 +202,9 @@ func TestInvokeActivityOptionsDefaultSummaries(t *testing.T) {
 	if got := localLanguageModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelActivity {
 		t.Fatalf("local language model summary = %q", got)
 	}
+	if got := localGenerateObjectActivityOptions(ActivityOptions{}).Summary; got != activities.GenerateObjectActivity {
+		t.Fatalf("local object summary = %q", got)
+	}
 	if got := localEmbeddingModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeEmbeddingModelActivity {
 		t.Fatalf("local embedding model summary = %q", got)
 	}
@@ -128,6 +219,30 @@ func testInvokeModelWorkflow(ctx workflow.Context) (string, error) {
 		return "", err
 	}
 	return ai.TextFromParts(result.Content), nil
+}
+
+func testGenerateObjectWorkflow(ctx workflow.Context) (string, error) {
+	result, err := GenerateObject(ctx, "model-1", ai.GenerateObjectOptions{
+		SchemaName: "profile",
+		Schema:     map[string]any{"type": "object"},
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Object.(map[string]any)["name"].(string), nil
+}
+
+func testGenerateObjectLocalWorkflow(ctx workflow.Context) (string, error) {
+	result, err := GenerateObject(ctx, "model-1", ai.GenerateObjectOptions{}, ActivityOptions{
+		LanguageModelBoundary: activities.ToolExecutionBoundaryLocalActivity,
+		LocalLanguageModel: workflow.LocalActivityOptions{
+			StartToCloseTimeout: time.Second,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Object.(map[string]any)["name"].(string), nil
 }
 
 func testInvokeModelLocalWorkflow(ctx workflow.Context) (string, error) {

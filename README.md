@@ -124,6 +124,23 @@ result, err := temporalai.InvokeModel(ctx, "model-id", ai.LanguageModelCallOptio
 })
 ```
 
+Structured output calls use the same durable activity boundary. The workflow
+passes a model ID separately from the serializable `GenerateObjectOptions`.
+
+```go
+profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOptions{
+    Prompt:     "Return a user profile for Ada.",
+    SchemaName: "profile",
+    Schema: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "name": map[string]any{"type": "string"},
+        },
+        "required": []any{"name"},
+    },
+})
+```
+
 For visible streaming, pass Temporal stream metadata under
 `ProviderOptions["temporal"]`; the activity strips that key before calling the
 real model provider.

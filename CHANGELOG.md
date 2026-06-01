@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.17 - 2026-06-01
+
+- Added `GenerateObject` activity registration and the `temporalai.GenerateObject`
+  workflow helper for durable structured-output calls.
+
 ## 0.2.16 - 2026-06-01
 
 - Bumped `go-ai` to `v0.2.7` so SDK consumers inherit the OpenRouter

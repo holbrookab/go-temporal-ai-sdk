@@ -55,6 +55,21 @@ func (a *Activities) InvokeModel(ctx context.Context, args InvokeModelArgs) (*In
 	return (*InvokeModelResult)(GenerateResultFromAI(result)), nil
 }
 
+func (a *Activities) GenerateObject(ctx context.Context, args GenerateObjectArgs) (*GenerateObjectResult, error) {
+	model, err := a.languageModel(args.ModelID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := ai.GenerateObject(ctx, args.Options.ToAI(model))
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, errors.New("model returned nil object result")
+	}
+	return GenerateObjectResultFromAI(result), nil
+}
+
 func (a *Activities) InvokeEmbeddingModel(ctx context.Context, args InvokeEmbeddingModelArgs) (*InvokeEmbeddingModelResult, error) {
 	provider, ok := a.provider.(ai.EmbeddingProvider)
 	if !ok {
