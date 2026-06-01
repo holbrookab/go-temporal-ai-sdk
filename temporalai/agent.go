@@ -744,6 +744,10 @@ func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *act
 				ToolMetadata:     part.ToolMetadata,
 				ProviderMetadata: part.ProviderMetadata,
 			})
+		case "reasoning-file", "file", "source":
+			if part.Content != nil {
+				out.Content = append(out.Content, activities.PartFromAI(part.Content))
+			}
 		case "finish":
 			out.FinishReason = part.FinishReason
 			out.Usage = part.Usage

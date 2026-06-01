@@ -151,6 +151,7 @@ func isReturnedStreamPart(part ai.StreamPart) bool {
 		"tool-input-end",
 		"tool-call",
 		"file",
+		"reasoning-file",
 		"source",
 		"finish":
 		return true

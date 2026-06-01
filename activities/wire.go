@@ -339,7 +339,7 @@ func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMe
 				ToolMetadata:     part.ToolMetadata,
 				ProviderMetadata: part.ProviderMetadata,
 			})
-		case "file", "source":
+		case "file", "reasoning-file", "source":
 			if part.Content != nil {
 				result.Content = append(result.Content, PartFromAI(part.Content))
 			}

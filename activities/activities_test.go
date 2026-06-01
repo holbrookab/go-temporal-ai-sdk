@@ -719,6 +719,50 @@ func TestInvokeModelStreamParsesToolCallInputRaw(t *testing.T) {
 	}
 }
 
+func TestInvokeModelStreamPreservesReasoningFileParts(t *testing.T) {
+	model := ai.NewMockLanguageModel("stream-1")
+	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		ch := make(chan ai.StreamPart, 2)
+		ch <- ai.StreamPart{
+			Type: "reasoning-file",
+			Content: ai.ReasoningFilePart{
+				Data:      ai.FileData{Type: "url", URL: "https://example.test/reasoning.png"},
+				MediaType: "image/png",
+			},
+		}
+		ch <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop}}
+		close(ch)
+		return &ai.LanguageModelStreamResult{Stream: ch}, nil
+	}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"stream-1": model},
+		},
+	})
+
+	result, err := acts.InvokeModelStream(context.Background(), InvokeModelStreamArgs{
+		ModelID: "stream-1",
+		Options: LanguageModelCallOptionsFromAI(ai.LanguageModelCallOptions{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result == nil || len(result.Result.Content) != 1 {
+		t.Fatalf("result content = %#v", result.Result)
+	}
+	part := result.Result.Content[0]
+	if part.Type != "reasoning-file" {
+		t.Fatalf("part type = %q", part.Type)
+	}
+	aiPart, ok := part.ToAI().(ai.ReasoningFilePart)
+	if !ok {
+		t.Fatalf("ToAI = %#v", part.ToAI())
+	}
+	if aiPart.Data.URL != "https://example.test/reasoning.png" {
+		t.Fatalf("reasoning file url = %q", aiPart.Data.URL)
+	}
+}
+
 func TestWirePreservesTextAndFileProviderMetadata(t *testing.T) {
 	metadata := ai.ProviderMetadata{"googleVertex": map[string]any{"thoughtSignature": "sig-1"}}
 

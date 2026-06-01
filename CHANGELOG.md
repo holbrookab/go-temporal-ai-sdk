@@ -2,8 +2,16 @@
 
 ## Unreleased
 
-- Bumped `go-ai` to `v0.2.3` and preserved text/file provider metadata across
-  the Temporal wire format for Vertex thought-signature replay.
+## 0.2.15 - 2026-05-31
+
+- Bumped `go-ai` to `v0.2.6`.
+- Preserved streamed `reasoning-file` parts when compacting model stream
+  results for workflow history.
+- Preserved text/file provider metadata across the Temporal wire format for
+  Vertex thought-signature replay.
+
+## Historical Notes
+
 - Added tool execution boundaries for durable agents. Tools still default to
   regular Temporal activities, but agents can opt into local tool activities by
   default or override the boundary per tool.
