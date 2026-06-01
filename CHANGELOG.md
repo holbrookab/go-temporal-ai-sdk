@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.16 - 2026-06-01
+
+- Bumped `go-ai` to `v0.2.7` so SDK consumers inherit the OpenRouter
+  structured-output schema fix.
+
 ## 0.2.15 - 2026-05-31
 
 - Bumped `go-ai` to `v0.2.6`.
