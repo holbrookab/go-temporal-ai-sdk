@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ type Relay struct {
 	liveWG                 sync.WaitGroup
 	liveErrMu              sync.Mutex
 	liveErr                error
+	disabled               bool
 }
 
 type attemptState struct {
@@ -69,6 +71,9 @@ func (r *Relay) Accept(ctx context.Context, part ai.StreamPart) error {
 	if r == nil || !r.options.Visible || r.options.StreamID == "" {
 		return nil
 	}
+	if r.isDisabled() {
+		return nil
+	}
 	event, lane, meta, ok := classifyPart(r.options.Lane, part)
 	if !ok {
 		return nil
@@ -77,6 +82,9 @@ func (r *Relay) Accept(ctx context.Context, part ai.StreamPart) error {
 	state, err := r.ensureAttempt(ctx, lane, meta)
 	if err != nil {
 		return err
+	}
+	if state == nil {
+		return nil
 	}
 	state.sequence++
 	if meta.delta != "" {
@@ -127,12 +135,21 @@ func (r *Relay) complete(ctx context.Context, status AttemptStatus, reason strin
 	if r == nil || !r.options.Visible || r.options.StreamID == "" {
 		return nil
 	}
+	if r.isDisabled() {
+		return nil
+	}
 	if err := r.flushLiveChunks(); err != nil {
 		return err
+	}
+	if r.isDisabled() {
+		return nil
 	}
 	for _, state := range r.attempts {
 		if err := r.flushSnapshot(ctx, state); err != nil {
 			return err
+		}
+		if r.isDisabled() {
+			return nil
 		}
 		if err := r.connector.CompleteAttempt(ctx, AttemptCompletion{
 			AttemptRef:     state.ref,
@@ -142,6 +159,9 @@ func (r *Relay) complete(ctx context.Context, status AttemptStatus, reason strin
 			SnapshotText:   state.text.String(),
 			SnapshotObject: state.object,
 		}); err != nil {
+			if r.disableIfBestEffortStreamNotFound(err) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -150,6 +170,9 @@ func (r *Relay) complete(ctx context.Context, status AttemptStatus, reason strin
 
 func (r *Relay) publishLiveChunk(ctx context.Context, chunk LiveChunk) error {
 	if r == nil {
+		return nil
+	}
+	if r.isDisabled() {
 		return nil
 	}
 	if err := r.livePublishError(); err != nil {
@@ -171,6 +194,9 @@ func (r *Relay) publishLiveChunk(ctx context.Context, chunk LiveChunk) error {
 func (r *Relay) publishLiveChunks() {
 	defer r.liveWG.Done()
 	for item := range r.liveQueue {
+		if r.isDisabled() {
+			continue
+		}
 		if err := r.connector.PublishLiveChunk(item.ctx, item.chunk); err != nil {
 			r.setLivePublishError(err)
 		}
@@ -194,6 +220,9 @@ func (r *Relay) setLivePublishError(err error) {
 	if err == nil {
 		return
 	}
+	if r.disableIfBestEffortStreamNotFound(err) {
+		return
+	}
 	r.liveErrMu.Lock()
 	defer r.liveErrMu.Unlock()
 	if r.liveErr == nil {
@@ -207,7 +236,32 @@ func (r *Relay) livePublishError() error {
 	return r.liveErr
 }
 
+func (r *Relay) isDisabled() bool {
+	if r == nil {
+		return false
+	}
+	r.liveErrMu.Lock()
+	defer r.liveErrMu.Unlock()
+	return r.disabled
+}
+
+func (r *Relay) disableIfBestEffortStreamNotFound(err error) bool {
+	if r == nil || err == nil || r.options.FailurePolicy != StreamFailurePolicyBestEffort {
+		return false
+	}
+	if !errors.Is(err, ErrStreamNotFound) {
+		return false
+	}
+	r.liveErrMu.Lock()
+	r.disabled = true
+	r.liveErrMu.Unlock()
+	return true
+}
+
 func (r *Relay) ensureAttempt(ctx context.Context, lane Lane, meta partMeta) (*attemptState, error) {
+	if r.isDisabled() {
+		return nil, nil
+	}
 	key := string(lane)
 	if meta.scope.StepID != "" {
 		key += ":step:" + meta.scope.StepID
@@ -241,12 +295,18 @@ func (r *Relay) ensureAttempt(ctx context.Context, lane Lane, meta partMeta) (*a
 		Scope:      meta.scope,
 	}
 	if err := r.connector.StartAttempt(ctx, ref); err != nil {
+		if r.disableIfBestEffortStreamNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	state := &attemptState{ref: ref}
 	r.attempts[key] = state
 	if err := r.flushSnapshot(ctx, state); err != nil {
 		return nil, err
+	}
+	if r.isDisabled() {
+		return nil, nil
 	}
 	return state, nil
 }
@@ -265,14 +325,23 @@ func (r *Relay) flushSnapshot(ctx context.Context, state *attemptState) error {
 	if state == nil {
 		return nil
 	}
+	if r.isDisabled() {
+		return nil
+	}
 	state.lastSnapshotSequence = state.sequence
 	state.lastSnapshotTextLength = state.text.Len()
-	return r.connector.UpdateAttemptSnapshot(ctx, AttemptSnapshot{
+	if err := r.connector.UpdateAttemptSnapshot(ctx, AttemptSnapshot{
 		AttemptRef:     state.ref,
 		Sequence:       state.sequence,
 		SnapshotText:   state.text.String(),
 		SnapshotObject: state.object,
-	})
+	}); err != nil {
+		if r.disableIfBestEffortStreamNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 type partMeta struct {

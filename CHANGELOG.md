@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.19 - 2026-06-01
+
+- Added typed `streaming.ErrStreamNotFound` handling and
+  `StreamFailurePolicyBestEffort` so visible streaming can degrade to no-op for
+  missing stream rows without swallowing other connector errors.
+
 ## 0.2.18 - 2026-06-01
 
 - Added connector-backed visible attempt updates for non-streaming

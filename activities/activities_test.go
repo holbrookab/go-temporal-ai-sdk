@@ -198,6 +198,108 @@ func TestGenerateObjectPublishesConnectorObjectSnapshot(t *testing.T) {
 	}
 }
 
+func TestGenerateObjectBestEffortStreamNotFoundStillSucceeds(t *testing.T) {
+	modelCalled := false
+	model := ai.NewMockLanguageModel("model-1")
+	model.GenerateFunc = func(_ context.Context, _ ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
+		modelCalled = true
+		return &ai.LanguageModelGenerateResult{
+			Content:      []ai.Part{ai.TextPart{Text: `{"name":"Ada"}`}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop, Raw: "stop"},
+		}, nil
+	}
+	connector := &recordingConnector{startErr: streaming.NewStreamNotFoundError("stream-123")}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+		},
+		StreamConnector: connector,
+	})
+
+	result, err := acts.GenerateObject(context.Background(), GenerateObjectArgs{
+		ModelID: "model-1",
+		Options: GenerateObjectOptionsFromAI(ai.GenerateObjectOptions{
+			Prompt: "return json",
+			Schema: map[string]any{"type": "object"},
+			ProviderOptions: ai.ProviderOptions{
+				ProviderOptionsKey: streaming.Options{
+					Visible:       true,
+					StreamID:      "stream-123",
+					AttemptID:     "turn-1",
+					FailurePolicy: streaming.StreamFailurePolicyBestEffort,
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modelCalled {
+		t.Fatal("model was not called")
+	}
+	object, ok := result.Object.(map[string]any)
+	if !ok || object["name"] != "Ada" {
+		t.Fatalf("object = %#v", result.Object)
+	}
+	if len(connector.live) != 0 || len(connector.completions) != 0 {
+		t.Fatalf("connector was not disabled after missing stream: live=%#v completions=%#v", connector.live, connector.completions)
+	}
+}
+
+func TestGenerateObjectStreamNotFoundIsStrictByDefault(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy streaming.StreamFailurePolicy
+	}{
+		{name: "default"},
+		{name: "strict", policy: streaming.StreamFailurePolicyStrict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			modelCalled := false
+			model := ai.NewMockLanguageModel("model-1")
+			model.GenerateFunc = func(_ context.Context, _ ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
+				modelCalled = true
+				return &ai.LanguageModelGenerateResult{
+					Content:      []ai.Part{ai.TextPart{Text: `{"name":"Ada"}`}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+				}, nil
+			}
+			acts := New(Options{
+				ModelProvider: ai.CustomProvider{
+					LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+				},
+				StreamConnector: &recordingConnector{
+					startErr: streaming.NewStreamNotFoundError("stream-123"),
+				},
+			})
+
+			_, err := acts.GenerateObject(context.Background(), GenerateObjectArgs{
+				ModelID: "model-1",
+				Options: GenerateObjectOptionsFromAI(ai.GenerateObjectOptions{
+					Prompt: "return json",
+					Schema: map[string]any{"type": "object"},
+					ProviderOptions: ai.ProviderOptions{
+						ProviderOptionsKey: streaming.Options{
+							Visible:       true,
+							StreamID:      "stream-123",
+							AttemptID:     "turn-1",
+							FailurePolicy: tt.policy,
+						},
+					},
+				}),
+			})
+			if !errors.Is(err, streaming.ErrStreamNotFound) {
+				t.Fatalf("err = %v, want stream not found", err)
+			}
+			if modelCalled {
+				t.Fatal("model should not be called when strict stream setup fails")
+			}
+		})
+	}
+}
+
 func TestStreamObjectPublishesConnectorObjectAndElementSnapshots(t *testing.T) {
 	model := ai.NewMockLanguageModel("model-1")
 	model.StreamFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
@@ -1109,6 +1211,10 @@ type recordingConnector struct {
 	snapshots              []streaming.AttemptSnapshot
 	completions            []streaming.AttemptCompletion
 	tools                  []streaming.ToolLifecycleInput
+	startErr               error
+	liveErr                error
+	snapshotErr            error
+	completionErr          error
 	toolDurable            []streaming.ToolLifecycleInput
 	toolLive               []streaming.ToolLifecycleInput
 	toolPersistErrForEvent map[streaming.ToolLifecycleEvent]error
@@ -1146,22 +1252,22 @@ func (s *recordingArtifactStore) PutToolArtifact(_ context.Context, input ToolAr
 
 func (c *recordingConnector) StartAttempt(_ context.Context, input streaming.AttemptRef) error {
 	c.starts = append(c.starts, input)
-	return nil
+	return c.startErr
 }
 
 func (c *recordingConnector) PublishLiveChunk(_ context.Context, input streaming.LiveChunk) error {
 	c.live = append(c.live, input)
-	return nil
+	return c.liveErr
 }
 
 func (c *recordingConnector) UpdateAttemptSnapshot(_ context.Context, input streaming.AttemptSnapshot) error {
 	c.snapshots = append(c.snapshots, input)
-	return nil
+	return c.snapshotErr
 }
 
 func (c *recordingConnector) CompleteAttempt(_ context.Context, input streaming.AttemptCompletion) error {
 	c.completions = append(c.completions, input)
-	return nil
+	return c.completionErr
 }
 
 func (c *recordingConnector) PublishToolLifecycleEvent(_ context.Context, input streaming.ToolLifecycleInput) error {

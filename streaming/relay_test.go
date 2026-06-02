@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/holbrookab/go-ai/packages/ai"
@@ -158,32 +159,185 @@ func TestRelayCarriesTaskStepScope(t *testing.T) {
 	}
 }
 
+func TestRelaySuppressesStreamNotFoundInBestEffort(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name  string
+		setup func(*recordingConnector)
+	}{
+		{
+			name: "start attempt",
+			setup: func(connector *recordingConnector) {
+				connector.startErr = NewStreamNotFoundError("stream-1")
+			},
+		},
+		{
+			name: "live chunk",
+			setup: func(connector *recordingConnector) {
+				connector.liveErr = NewStreamNotFoundError("stream-1")
+			},
+		},
+		{
+			name: "snapshot",
+			setup: func(connector *recordingConnector) {
+				connector.snapshotErr = NewStreamNotFoundError("stream-1")
+			},
+		},
+		{
+			name: "completion",
+			setup: func(connector *recordingConnector) {
+				connector.completionErr = NewStreamNotFoundError("stream-1")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector := &recordingConnector{}
+			tt.setup(connector)
+			relay := NewRelay(connector, Options{
+				Visible:       true,
+				StreamID:      "stream-1",
+				Lane:          LaneText,
+				FailurePolicy: StreamFailurePolicyBestEffort,
+			})
+
+			if err := relay.Accept(ctx, ai.StreamPart{Type: "text-delta", TextDelta: "hello"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := relay.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRelayStreamFailurePolicyStrictByDefault(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name   string
+		policy StreamFailurePolicy
+	}{
+		{name: "default"},
+		{name: "strict", policy: StreamFailurePolicyStrict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relay := NewRelay(&recordingConnector{
+				startErr: NewStreamNotFoundError("stream-1"),
+			}, Options{
+				Visible:       true,
+				StreamID:      "stream-1",
+				Lane:          LaneText,
+				FailurePolicy: tt.policy,
+			})
+
+			err := relay.Accept(ctx, ai.StreamPart{Type: "text-delta", TextDelta: "hello"})
+			if !errors.Is(err, ErrStreamNotFound) {
+				t.Fatalf("err = %v, want stream not found", err)
+			}
+		})
+	}
+}
+
+func TestRelayBestEffortKeepsNonStreamNotFoundErrorsFatal(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("appsync auth failed")
+	tests := []struct {
+		name      string
+		setup     func(*recordingConnector)
+		wantPhase string
+	}{
+		{
+			name: "start attempt",
+			setup: func(connector *recordingConnector) {
+				connector.startErr = boom
+			},
+			wantPhase: "accept",
+		},
+		{
+			name: "live chunk",
+			setup: func(connector *recordingConnector) {
+				connector.liveErr = boom
+			},
+			wantPhase: "commit",
+		},
+		{
+			name: "snapshot",
+			setup: func(connector *recordingConnector) {
+				connector.snapshotErr = boom
+			},
+			wantPhase: "accept",
+		},
+		{
+			name: "completion",
+			setup: func(connector *recordingConnector) {
+				connector.completionErr = boom
+			},
+			wantPhase: "commit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connector := &recordingConnector{}
+			tt.setup(connector)
+			relay := NewRelay(connector, Options{
+				Visible:       true,
+				StreamID:      "stream-1",
+				Lane:          LaneText,
+				FailurePolicy: StreamFailurePolicyBestEffort,
+			})
+
+			acceptErr := relay.Accept(ctx, ai.StreamPart{Type: "text-delta", TextDelta: "hello"})
+			if tt.wantPhase == "accept" {
+				if !errors.Is(acceptErr, boom) {
+					t.Fatalf("accept err = %v, want %v", acceptErr, boom)
+				}
+				return
+			}
+			if acceptErr != nil {
+				t.Fatalf("accept err = %v", acceptErr)
+			}
+			if err := relay.Commit(ctx); !errors.Is(err, boom) {
+				t.Fatalf("commit err = %v, want %v", err, boom)
+			}
+		})
+	}
+}
+
 type recordingConnector struct {
 	starts      []AttemptRef
 	live        []LiveChunk
 	snapshots   []AttemptSnapshot
 	completions []AttemptCompletion
 	tools       []ToolLifecycleInput
+
+	startErr      error
+	liveErr       error
+	snapshotErr   error
+	completionErr error
 }
 
 func (c *recordingConnector) StartAttempt(_ context.Context, input AttemptRef) error {
 	c.starts = append(c.starts, input)
-	return nil
+	return c.startErr
 }
 
 func (c *recordingConnector) PublishLiveChunk(_ context.Context, input LiveChunk) error {
 	c.live = append(c.live, input)
-	return nil
+	return c.liveErr
 }
 
 func (c *recordingConnector) UpdateAttemptSnapshot(_ context.Context, input AttemptSnapshot) error {
 	c.snapshots = append(c.snapshots, input)
-	return nil
+	return c.snapshotErr
 }
 
 func (c *recordingConnector) CompleteAttempt(_ context.Context, input AttemptCompletion) error {
 	c.completions = append(c.completions, input)
-	return nil
+	return c.completionErr
 }
 
 func (c *recordingConnector) PublishToolLifecycleEvent(_ context.Context, input ToolLifecycleInput) error {

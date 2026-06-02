@@ -71,6 +71,13 @@ const (
 	DisplayModeHidden    DisplayMode = "hidden"
 )
 
+type StreamFailurePolicy string
+
+const (
+	StreamFailurePolicyStrict     StreamFailurePolicy = "strict"
+	StreamFailurePolicyBestEffort StreamFailurePolicy = "best-effort"
+)
+
 type Scope struct {
 	DisplayMode DisplayMode `json:"displayMode,omitempty"`
 	AgentID     string      `json:"agentId,omitempty"`
@@ -83,13 +90,14 @@ type Scope struct {
 }
 
 type Options struct {
-	Visible                 bool   `json:"visible,omitempty"`
-	StreamID                string `json:"streamId,omitempty"`
-	Lane                    Lane   `json:"lane,omitempty"`
-	AttemptID               string `json:"attemptId,omitempty"`
-	SnapshotEveryChunks     int    `json:"snapshotEveryChunks,omitempty"`
-	SnapshotEveryCharacters int    `json:"snapshotEveryChars,omitempty"`
-	PersistEphemeralChunks  bool   `json:"persistEphemeralChunks,omitempty"`
+	Visible                 bool                `json:"visible,omitempty"`
+	StreamID                string              `json:"streamId,omitempty"`
+	Lane                    Lane                `json:"lane,omitempty"`
+	AttemptID               string              `json:"attemptId,omitempty"`
+	SnapshotEveryChunks     int                 `json:"snapshotEveryChunks,omitempty"`
+	SnapshotEveryCharacters int                 `json:"snapshotEveryChars,omitempty"`
+	PersistEphemeralChunks  bool                `json:"persistEphemeralChunks,omitempty"`
+	FailurePolicy           StreamFailurePolicy `json:"failurePolicy,omitempty"`
 	Scope
 }
 

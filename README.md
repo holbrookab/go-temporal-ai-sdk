@@ -179,15 +179,23 @@ stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCal
 
 The same option can be passed to non-streaming calls when the UI needs visible
 progress or final snapshots without using a separate streaming activity.
+By default visible streaming is strict: connector failures make the model
+activity fail. Set `FailurePolicy` to
+`streaming.StreamFailurePolicyBestEffort` when the stream is a telemetry/UI
+side-channel and a missing stream row should degrade to no visible updates
+instead of retrying the model activity. Best-effort mode only suppresses typed
+`streaming.ErrStreamNotFound` errors; auth, throttling, publish, and other
+connector failures still propagate.
 
 ```go
 result, err := temporalai.InvokeModel(ctx, "model-id", ai.LanguageModelCallOptions{
     Prompt: []ai.Message{ai.UserMessage("summarize this")},
     ProviderOptions: ai.ProviderOptions{
         "temporal": streaming.Options{
-            Visible:  true,
-            StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-            Lane:     streaming.LaneText,
+            Visible:       true,
+            StreamID:      workflow.GetInfo(ctx).WorkflowExecution.ID,
+            Lane:          streaming.LaneText,
+            FailurePolicy: streaming.StreamFailurePolicyBestEffort,
         },
     },
 })
@@ -197,8 +205,9 @@ profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOpti
     Schema: map[string]any{"type": "object"},
     ProviderOptions: ai.ProviderOptions{
         "temporal": streaming.Options{
-            Visible:  true,
-            StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+            Visible:       true,
+            StreamID:      workflow.GetInfo(ctx).WorkflowExecution.ID,
+            FailurePolicy: streaming.StreamFailurePolicyBestEffort,
         },
     },
 })

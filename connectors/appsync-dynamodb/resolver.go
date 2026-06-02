@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
 )
 
 type DynamoDBResolverOptions struct {
@@ -54,7 +55,7 @@ func (r *DynamoDBResolver) ResolveStream(ctx context.Context, streamID string) (
 		return StreamRef{}, fmt.Errorf("resolving stream %q: %w", streamID, err)
 	}
 	if len(out.Items) == 0 {
-		return StreamRef{}, fmt.Errorf("stream %q not found", streamID)
+		return StreamRef{}, streaming.NewStreamNotFoundError(streamID)
 	}
 	var item map[string]any
 	if err := attributevalue.UnmarshalMap(out.Items[0], &item); err != nil {

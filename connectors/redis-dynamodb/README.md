@@ -61,6 +61,9 @@ The connector uses a `Resolver` to map a Temporal stream ID to:
 `ownerUserId` or `scopeId`, then `parentConversationId` or `conversationId`.
 Override field names, prefixes, or formatter functions when your application
 uses different routing.
+If the stream row is missing, the resolver returns a typed
+`streaming.ErrStreamNotFound`/`streaming.StreamNotFoundError` so applications can
+use `errors.Is` or opt into `streaming.StreamFailurePolicyBestEffort`.
 
 ## Required Options
 
