@@ -34,6 +34,10 @@ func generateObjectActivityOptions(options ActivityOptions) workflow.ActivityOpt
 	return mergeActivityOptions(defaultActivityOptions(activities.GenerateObjectActivity), mergeActivityOptions(options.Default, options.LanguageModel))
 }
 
+func streamObjectActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(activities.StreamObjectActivity), mergeActivityOptions(options.Default, options.LanguageModel))
+}
+
 func embeddingModelActivityOptions(options ActivityOptions) workflow.ActivityOptions {
 	return mergeActivityOptions(defaultActivityOptions(activities.InvokeEmbeddingModelActivity), mergeActivityOptions(options.Default, options.EmbeddingModel))
 }
@@ -125,6 +129,24 @@ func GenerateObject(ctx workflow.Context, modelID string, options ai.GenerateObj
 		ctx = workflow.WithActivityOptions(ctx, generateObjectActivityOptions(ao))
 		err = workflow.ExecuteActivity(ctx, activities.GenerateObjectActivity, args).Get(ctx, &wireResult)
 	}
+	if err != nil {
+		return nil, err
+	}
+	result := wireResult.ToAI()
+	return &result, nil
+}
+
+func StreamObject(ctx workflow.Context, modelID string, options ai.StreamObjectOptions, activityOptions ...ActivityOptions) (*activities.StreamObjectAIResult, error) {
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	ctx = workflow.WithActivityOptions(ctx, streamObjectActivityOptions(ao))
+	var wireResult activities.StreamObjectResult
+	err := workflow.ExecuteActivity(ctx, activities.StreamObjectActivity, activities.StreamObjectArgs{
+		ModelID: modelID,
+		Options: activities.StreamObjectOptionsFromAI(options),
+	}).Get(ctx, &wireResult)
 	if err != nil {
 		return nil, err
 	}

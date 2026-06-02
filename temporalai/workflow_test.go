@@ -180,12 +180,53 @@ func TestGenerateObjectCanRunAsLocalActivity(t *testing.T) {
 	}
 }
 
+func TestStreamObjectWorkflowHelper(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.StreamObjectArgs) (*activities.StreamObjectResult, error) {
+			if args.ModelID != "model-1" {
+				t.Fatalf("model = %q", args.ModelID)
+			}
+			if args.Options.Output != ai.OutputArray {
+				t.Fatalf("output = %q", args.Options.Output)
+			}
+			return &activities.StreamObjectResult{
+				StreamParts: []activities.ObjectStreamPart{
+					{Type: "element", Element: map[string]any{"name": "Ada"}},
+					{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop}},
+				},
+				Elements: []any{map[string]any{"name": "Ada"}},
+			}, nil
+		},
+		activityRegisterOptions(activities.StreamObjectActivity),
+	)
+
+	env.ExecuteWorkflow(testStreamObjectWorkflow)
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	var result string
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result != "Ada" {
+		t.Fatalf("result = %q", result)
+	}
+}
+
 func TestInvokeActivityOptionsDefaultSummaries(t *testing.T) {
 	if got := languageModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelActivity {
 		t.Fatalf("language model summary = %q", got)
 	}
 	if got := generateObjectActivityOptions(ActivityOptions{}).Summary; got != activities.GenerateObjectActivity {
 		t.Fatalf("object summary = %q", got)
+	}
+	if got := streamObjectActivityOptions(ActivityOptions{}).Summary; got != activities.StreamObjectActivity {
+		t.Fatalf("stream object summary = %q", got)
 	}
 	if got := streamModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelStreamActivity {
 		t.Fatalf("stream model summary = %q", got)
@@ -243,6 +284,20 @@ func testGenerateObjectLocalWorkflow(ctx workflow.Context) (string, error) {
 		return "", err
 	}
 	return result.Object.(map[string]any)["name"].(string), nil
+}
+
+func testStreamObjectWorkflow(ctx workflow.Context) (string, error) {
+	result, err := StreamObject(ctx, "model-1", ai.StreamObjectOptions{
+		GenerateObjectOptions: ai.GenerateObjectOptions{
+			Output: ai.OutputArray,
+			Schema: map[string]any{"type": "object"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	element := result.Elements[0].(map[string]any)
+	return element["name"].(string), nil
 }
 
 func testInvokeModelLocalWorkflow(ctx workflow.Context) (string, error) {

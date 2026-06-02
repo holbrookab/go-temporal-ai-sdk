@@ -42,6 +42,61 @@ func TestInvokeModelDelegatesToProvider(t *testing.T) {
 	}
 }
 
+func TestInvokeModelPublishesConnectorAttempt(t *testing.T) {
+	model := ai.NewMockLanguageModel("model-1")
+	model.GenerateFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
+		if _, ok := opts.ProviderOptions[ProviderOptionsKey]; ok {
+			t.Fatalf("temporal provider option leaked to model: %#v", opts.ProviderOptions)
+		}
+		return &ai.LanguageModelGenerateResult{
+			Content:      []ai.Part{ai.TextPart{Text: "hi"}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+		}, nil
+	}
+	connector := &recordingConnector{}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+		},
+		StreamConnector: connector,
+	})
+
+	result, err := acts.InvokeModel(context.Background(), InvokeModelArgs{
+		ModelID: "model-1",
+		Options: LanguageModelCallOptionsFromAI(ai.LanguageModelCallOptions{
+			ProviderOptions: ai.ProviderOptions{
+				ProviderOptionsKey: streaming.Options{
+					Visible:   true,
+					StreamID:  "stream-123",
+					AttemptID: "turn-1",
+					Lane:      streaming.LaneText,
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ai.TextFromParts(result.ToAI().Content); got != "hi" {
+		t.Fatalf("text = %q", got)
+	}
+	if len(connector.starts) != 1 {
+		t.Fatalf("starts = %d", len(connector.starts))
+	}
+	if len(connector.live) != 3 {
+		t.Fatalf("live chunks = %#v", connector.live)
+	}
+	if connector.live[0].Event != streaming.EventStreamStart || connector.live[1].Delta != "hi" || connector.live[2].Event != streaming.EventFinish {
+		t.Fatalf("live chunks = %#v", connector.live)
+	}
+	if len(connector.completions) != 1 || connector.completions[0].Status != streaming.AttemptCommitted {
+		t.Fatalf("completions = %#v", connector.completions)
+	}
+	if connector.completions[0].SnapshotText != "hi" {
+		t.Fatalf("completion = %#v", connector.completions[0])
+	}
+}
+
 func TestGenerateObjectDelegatesToGenerateObject(t *testing.T) {
 	model := ai.NewMockLanguageModel("model-1")
 	model.GenerateFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
@@ -78,6 +133,146 @@ func TestGenerateObjectDelegatesToGenerateObject(t *testing.T) {
 	}
 	if result.Text != `{"name":"Ada"}` || result.Response.ID != "response-1" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestGenerateObjectPublishesConnectorObjectSnapshot(t *testing.T) {
+	model := ai.NewMockLanguageModel("model-1")
+	model.GenerateFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelGenerateResult, error) {
+		if _, ok := opts.ProviderOptions[ProviderOptionsKey]; ok {
+			t.Fatalf("temporal provider option leaked to model: %#v", opts.ProviderOptions)
+		}
+		return &ai.LanguageModelGenerateResult{
+			Content:      []ai.Part{ai.TextPart{Text: `{"name":"Ada"}`}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop, Raw: "stop"},
+		}, nil
+	}
+	connector := &recordingConnector{}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+		},
+		StreamConnector: connector,
+	})
+
+	result, err := acts.GenerateObject(context.Background(), GenerateObjectArgs{
+		ModelID: "model-1",
+		Options: GenerateObjectOptionsFromAI(ai.GenerateObjectOptions{
+			Prompt: "return json",
+			Schema: map[string]any{"type": "object"},
+			ProviderOptions: ai.ProviderOptions{
+				ProviderOptionsKey: streaming.Options{
+					Visible:   true,
+					StreamID:  "stream-123",
+					AttemptID: "turn-1",
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, ok := result.Object.(map[string]any)
+	if !ok || object["name"] != "Ada" {
+		t.Fatalf("object = %#v", result.Object)
+	}
+	if len(connector.starts) != 1 {
+		t.Fatalf("starts = %d", len(connector.starts))
+	}
+	if connector.starts[0].Lane != streaming.LaneObject {
+		t.Fatalf("start lane = %q", connector.starts[0].Lane)
+	}
+	if len(connector.live) != 3 {
+		t.Fatalf("live chunks = %#v", connector.live)
+	}
+	if connector.live[1].Delta != "" {
+		t.Fatalf("object lane delta = %q, want raw JSON suppressed", connector.live[1].Delta)
+	}
+	liveObject, ok := connector.live[1].SnapshotObject.(map[string]any)
+	if !ok || liveObject["name"] != "Ada" {
+		t.Fatalf("live object = %#v", connector.live[1].SnapshotObject)
+	}
+	completion, ok := connector.completions[0].SnapshotObject.(map[string]any)
+	if !ok || completion["name"] != "Ada" {
+		t.Fatalf("completion object = %#v", connector.completions[0].SnapshotObject)
+	}
+}
+
+func TestStreamObjectPublishesConnectorObjectAndElementSnapshots(t *testing.T) {
+	model := ai.NewMockLanguageModel("model-1")
+	model.StreamFunc = func(_ context.Context, opts ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		if _, ok := opts.ProviderOptions[ProviderOptionsKey]; ok {
+			t.Fatalf("temporal provider option leaked to model: %#v", opts.ProviderOptions)
+		}
+		if opts.ResponseFormat == nil || opts.ResponseFormat.Type != "json" {
+			t.Fatalf("response format = %#v, want json", opts.ResponseFormat)
+		}
+		ch := make(chan ai.StreamPart, 3)
+		ch <- ai.StreamPart{Type: "text-delta", TextDelta: `{"elements":[{"name":"Ada"},`}
+		ch <- ai.StreamPart{Type: "text-delta", TextDelta: `{"name":"Grace"}]}`}
+		ch <- ai.StreamPart{Type: "finish", FinishReason: ai.FinishReason{Unified: ai.FinishStop}}
+		close(ch)
+		return &ai.LanguageModelStreamResult{Stream: ch}, nil
+	}
+	connector := &recordingConnector{}
+	acts := New(Options{
+		ModelProvider: ai.CustomProvider{
+			LanguageModels: map[string]ai.LanguageModel{"model-1": model},
+		},
+		StreamConnector: connector,
+	})
+
+	result, err := acts.StreamObject(context.Background(), StreamObjectArgs{
+		ModelID: "model-1",
+		Options: StreamObjectOptionsFromAI(ai.StreamObjectOptions{
+			GenerateObjectOptions: ai.GenerateObjectOptions{
+				Output: ai.OutputArray,
+				Prompt: "return json",
+				Schema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"name": map[string]any{"type": "string"}},
+					"required":   []any{"name"},
+				},
+				ProviderOptions: ai.ProviderOptions{
+					ProviderOptionsKey: streaming.Options{
+						Visible:   true,
+						StreamID:  "stream-123",
+						AttemptID: "turn-1",
+					},
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Elements) != 2 {
+		t.Fatalf("elements = %#v", result.Elements)
+	}
+	if len(result.StreamParts) == 0 {
+		t.Fatal("expected object stream parts")
+	}
+	if len(connector.starts) != 1 {
+		t.Fatalf("starts = %d", len(connector.starts))
+	}
+	if connector.starts[0].Lane != streaming.LaneObject {
+		t.Fatalf("start lane = %q", connector.starts[0].Lane)
+	}
+	var elementChunks int
+	for _, chunk := range connector.live {
+		if chunk.Delta != "" {
+			t.Fatalf("object stream emitted raw JSON delta: %#v", chunk)
+		}
+		if chunk.Event == streaming.EventElement {
+			elementChunks++
+		}
+	}
+	if elementChunks != 2 {
+		t.Fatalf("element chunks = %d, live = %#v", elementChunks, connector.live)
+	}
+	completion, ok := connector.completions[0].SnapshotObject.([]any)
+	if !ok || len(completion) != 2 {
+		t.Fatalf("completion object = %#v", connector.completions[0].SnapshotObject)
 	}
 }
 

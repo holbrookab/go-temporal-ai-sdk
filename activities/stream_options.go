@@ -17,6 +17,20 @@ func extractStreamOptions(options ai.LanguageModelCallOptions) (ai.LanguageModel
 	return options, streamOptions
 }
 
+func extractGenerateObjectStreamOptions(options ai.GenerateObjectOptions) (ai.GenerateObjectOptions, streaming.Options) {
+	providerOptions := cloneProviderOptions(options.ProviderOptions)
+	streamOptions := parseStreamOptions(providerOptions[ProviderOptionsKey])
+	delete(providerOptions, ProviderOptionsKey)
+	options.ProviderOptions = providerOptions
+	return options, streamOptions
+}
+
+func extractStreamObjectStreamOptions(options ai.StreamObjectOptions) (ai.StreamObjectOptions, streaming.Options) {
+	generateOptions, streamOptions := extractGenerateObjectStreamOptions(options.GenerateObjectOptions)
+	options.GenerateObjectOptions = generateOptions
+	return options, streamOptions
+}
+
 func parseStreamOptions(value any) streaming.Options {
 	if value == nil {
 		return streaming.Options{}

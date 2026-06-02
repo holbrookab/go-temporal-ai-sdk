@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.18 - 2026-06-01
+
+- Added connector-backed visible attempt updates for non-streaming
+  `InvokeModel` and `GenerateObject` calls when temporal stream options are
+  provided.
+- Added `StreamObject` activity registration and the `temporalai.StreamObject`
+  workflow helper for object-native streaming calls.
+
 ## 0.2.17 - 2026-06-01
 
 - Added `GenerateObject` activity registration and the `temporalai.GenerateObject`

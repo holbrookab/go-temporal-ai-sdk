@@ -8,6 +8,7 @@ import (
 const (
 	InvokeModelActivity               = "go-temporal-ai-sdk.InvokeModel"
 	GenerateObjectActivity            = "go-temporal-ai-sdk.GenerateObject"
+	StreamObjectActivity              = "go-temporal-ai-sdk.StreamObject"
 	InvokeModelStreamActivity         = "go-temporal-ai-sdk.InvokeModelStream"
 	InvokeEmbeddingModelActivity      = "go-temporal-ai-sdk.InvokeEmbeddingModel"
 	InvokeToolActivity                = "go-temporal-ai-sdk.InvokeTool"
@@ -32,6 +33,18 @@ type InvokeModelResult = LanguageModelGenerateResult
 type GenerateObjectArgs struct {
 	ModelID string                `json:"modelId"`
 	Options GenerateObjectOptions `json:"options"`
+}
+
+type StreamObjectArgs struct {
+	ModelID string              `json:"modelId"`
+	Options StreamObjectOptions `json:"options"`
+}
+
+type StreamObjectResult struct {
+	StreamParts []ObjectStreamPart  `json:"streamParts,omitempty"`
+	Elements    []any               `json:"elements,omitempty"`
+	Request     *ai.RequestMetadata `json:"request,omitempty"`
+	Response    *ResponseMetadata   `json:"response,omitempty"`
 }
 
 type InvokeModelStreamArgs struct {

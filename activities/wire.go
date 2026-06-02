@@ -2,6 +2,7 @@ package activities
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
@@ -50,6 +51,11 @@ type GenerateObjectOptions struct {
 	StopSequences         []string           `json:"stopSequences,omitempty"`
 	Seed                  *int               `json:"seed,omitempty"`
 	Reasoning             string             `json:"reasoning,omitempty"`
+}
+
+type StreamObjectOptions struct {
+	GenerateObjectOptions
+	IncludeRawChunks bool `json:"includeRawChunks,omitempty"`
 }
 
 type Message struct {
@@ -109,6 +115,20 @@ type GenerateObjectResult struct {
 	Response         ResponseMetadata    `json:"response,omitempty"`
 	Reasoning        string              `json:"reasoning,omitempty"`
 	Text             string              `json:"text,omitempty"`
+}
+
+type ObjectStreamPart struct {
+	Type             string              `json:"type"`
+	TextDelta        string              `json:"textDelta,omitempty"`
+	Object           any                 `json:"object,omitempty"`
+	Element          any                 `json:"element,omitempty"`
+	FinishReason     ai.FinishReason     `json:"finishReason,omitempty"`
+	Usage            ai.Usage            `json:"usage,omitempty"`
+	Warnings         []ai.Warning        `json:"warnings,omitempty"`
+	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
+	Raw              any                 `json:"raw,omitempty"`
+	AbortReason      string              `json:"abortReason,omitempty"`
+	ErrorText        string              `json:"errorText,omitempty"`
 }
 
 type RequestMetadata = ai.RequestMetadata
@@ -257,6 +277,13 @@ func GenerateObjectOptionsFromAI(options ai.GenerateObjectOptions) GenerateObjec
 	}
 }
 
+func StreamObjectOptionsFromAI(options ai.StreamObjectOptions) StreamObjectOptions {
+	return StreamObjectOptions{
+		GenerateObjectOptions: GenerateObjectOptionsFromAI(options.GenerateObjectOptions),
+		IncludeRawChunks:      options.IncludeRawChunks,
+	}
+}
+
 func (options GenerateObjectOptions) ToAI(model ai.LanguageModel) ai.GenerateObjectOptions {
 	return ai.GenerateObjectOptions{
 		Model:                 model,
@@ -284,6 +311,13 @@ func (options GenerateObjectOptions) ToAI(model ai.LanguageModel) ai.GenerateObj
 		StopSequences:         options.StopSequences,
 		Seed:                  options.Seed,
 		Reasoning:             options.Reasoning,
+	}
+}
+
+func (options StreamObjectOptions) ToAI(model ai.LanguageModel) ai.StreamObjectOptions {
+	return ai.StreamObjectOptions{
+		GenerateObjectOptions: options.GenerateObjectOptions.ToAI(model),
+		IncludeRawChunks:      options.IncludeRawChunks,
 	}
 }
 
@@ -435,6 +469,67 @@ func (result GenerateObjectResult) ToAI() ai.GenerateObjectResult {
 		Reasoning:        result.Reasoning,
 		Text:             result.Text,
 	}
+}
+
+func ObjectStreamPartFromAI(part ai.ObjectStreamPart) ObjectStreamPart {
+	errorText := ""
+	if part.Err != nil {
+		errorText = part.Err.Error()
+	}
+	return ObjectStreamPart{
+		Type:             part.Type,
+		TextDelta:        part.TextDelta,
+		Object:           part.Object,
+		Element:          part.Element,
+		FinishReason:     part.FinishReason,
+		Usage:            part.Usage,
+		Warnings:         part.Warnings,
+		ProviderMetadata: part.ProviderMetadata,
+		Raw:              part.Raw,
+		AbortReason:      part.AbortReason,
+		ErrorText:        errorText,
+	}
+}
+
+func ObjectStreamPartsFromAI(parts []ai.ObjectStreamPart) []ObjectStreamPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]ObjectStreamPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, ObjectStreamPartFromAI(part))
+	}
+	return out
+}
+
+func ObjectStreamPartsToAI(parts []ObjectStreamPart) []ai.ObjectStreamPart {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]ai.ObjectStreamPart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, part.ToAI())
+	}
+	return out
+}
+
+func (part ObjectStreamPart) ToAI() ai.ObjectStreamPart {
+	out := ai.ObjectStreamPart{
+		Type:             part.Type,
+		TextDelta:        part.TextDelta,
+		Object:           part.Object,
+		Element:          part.Element,
+		FinishReason:     part.FinishReason,
+		Usage:            part.Usage,
+		Warnings:         part.Warnings,
+		ProviderMetadata: part.ProviderMetadata,
+		Raw:              part.Raw,
+		AbortReason:      part.AbortReason,
+	}
+	if part.ErrorText != "" {
+		out.Err = errors.New(part.ErrorText)
+	}
+	return out
 }
 
 func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMetadata, response ai.ResponseMetadata) *LanguageModelGenerateResult {
@@ -619,4 +714,25 @@ type InvokeModelStreamAIResult struct {
 	Request     ai.RequestMetadata
 	Response    ai.ResponseMetadata
 	Result      *ai.LanguageModelGenerateResult
+}
+
+func (result StreamObjectResult) ToAI() StreamObjectAIResult {
+	out := StreamObjectAIResult{
+		StreamParts: ObjectStreamPartsToAI(result.StreamParts),
+		Elements:    result.Elements,
+	}
+	if result.Request != nil {
+		out.Request = *result.Request
+	}
+	if result.Response != nil {
+		out.Response = result.Response.ToAI()
+	}
+	return out
+}
+
+type StreamObjectAIResult struct {
+	StreamParts []ai.ObjectStreamPart
+	Elements    []any
+	Request     ai.RequestMetadata
+	Response    ai.ResponseMetadata
 }

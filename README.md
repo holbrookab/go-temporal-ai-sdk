@@ -141,9 +141,29 @@ profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOpti
 })
 ```
 
-For visible streaming, pass Temporal stream metadata under
-`ProviderOptions["temporal"]`; the activity strips that key before calling the
-real model provider.
+Visible updates are standardized through the same `streaming.Connector`
+configured on `activities.Options.StreamConnector`. Pass Temporal stream
+metadata under `ProviderOptions["temporal"]`; activities strip that key before
+calling the real model provider. If `Visible` is false or `StreamID` is empty,
+the relay is a no-op even when a connector is configured.
+
+`temporalai.InvokeModel`, `temporalai.GenerateObject`,
+`temporalai.StreamObject`, and `temporalai.InvokeModelStream` all use this
+opt-in shape:
+
+- `InvokeModel` emits attempt start, final text/reasoning/tool/file/source
+  chunks, finish, and committed completion.
+- `GenerateObject` emits attempt start, optional reasoning, a final object
+  snapshot, finish, and committed completion. It defaults to the object lane
+  when no lane is provided.
+- `StreamObject` wraps `ai.StreamObject`, emits object snapshots and element
+  chunks as upstream object parts arrive, drains the upstream `Elements` channel,
+  and returns buffered object stream parts/elements to the workflow. It defaults
+  to the object lane when no lane is provided.
+- `InvokeModelStream` emits provider stream chunks and partial JSON/object
+  snapshots as they arrive. With a JSON response format this is still text
+  streaming plus partial JSON parsing, not the object-native `StreamObject`
+  contract.
 
 ```go
 stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCallOptions{
@@ -152,6 +172,59 @@ stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCal
             Visible:  true,
             StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
             Lane:     streaming.LaneText,
+        },
+    },
+})
+```
+
+The same option can be passed to non-streaming calls when the UI needs visible
+progress or final snapshots without using a separate streaming activity.
+
+```go
+result, err := temporalai.InvokeModel(ctx, "model-id", ai.LanguageModelCallOptions{
+    Prompt: []ai.Message{ai.UserMessage("summarize this")},
+    ProviderOptions: ai.ProviderOptions{
+        "temporal": streaming.Options{
+            Visible:  true,
+            StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+            Lane:     streaming.LaneText,
+        },
+    },
+})
+
+profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOptions{
+    Prompt: "Return a user profile for Ada.",
+    Schema: map[string]any{"type": "object"},
+    ProviderOptions: ai.ProviderOptions{
+        "temporal": streaming.Options{
+            Visible:  true,
+            StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        },
+    },
+})
+```
+
+Use `StreamObject` when the model output is conceptually an object stream,
+especially array output where individual elements should become visible as they
+arrive.
+
+```go
+items, err := temporalai.StreamObject(ctx, "model-id", ai.StreamObjectOptions{
+    GenerateObjectOptions: ai.GenerateObjectOptions{
+        Output: ai.OutputArray,
+        Prompt: "Return matching contacts.",
+        Schema: map[string]any{
+            "type": "object",
+            "properties": map[string]any{
+                "name": map[string]any{"type": "string"},
+            },
+            "required": []any{"name"},
+        },
+        ProviderOptions: ai.ProviderOptions{
+            "temporal": streaming.Options{
+                Visible:  true,
+                StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+            },
         },
     },
 })

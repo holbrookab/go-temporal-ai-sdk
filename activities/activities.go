@@ -45,12 +45,27 @@ func (a *Activities) InvokeModel(ctx context.Context, args InvokeModelArgs) (*In
 	if err != nil {
 		return nil, err
 	}
-	result, err := model.DoGenerate(ctx, args.Options.ToAI())
+	options, streamOptions := extractStreamOptions(args.Options.ToAI())
+	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
+		return nil, err
+	}
+	result, err := model.DoGenerate(ctx, options)
 	if err != nil {
+		failRelay(ctx, relay, err)
 		return nil, err
 	}
 	if result == nil {
-		return nil, errors.New("model returned nil generate result")
+		err := errors.New("model returned nil generate result")
+		failRelay(ctx, relay, err)
+		return nil, err
+	}
+	if err := relayGenerateResult(ctx, relay, result); err != nil {
+		_ = relay.Discard(ctx, err.Error())
+		return nil, err
+	}
+	if err := relay.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return (*InvokeModelResult)(GenerateResultFromAI(result)), nil
 }
@@ -60,14 +75,63 @@ func (a *Activities) GenerateObject(ctx context.Context, args GenerateObjectArgs
 	if err != nil {
 		return nil, err
 	}
-	result, err := ai.GenerateObject(ctx, args.Options.ToAI(model))
+	options, streamOptions := extractGenerateObjectStreamOptions(args.Options.ToAI(model))
+	if streamOptions.Lane == "" {
+		streamOptions.Lane = streaming.LaneObject
+	}
+	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
+		return nil, err
+	}
+	result, err := ai.GenerateObject(ctx, options)
 	if err != nil {
+		failRelay(ctx, relay, err)
 		return nil, err
 	}
 	if result == nil {
-		return nil, errors.New("model returned nil object result")
+		err := errors.New("model returned nil object result")
+		failRelay(ctx, relay, err)
+		return nil, err
+	}
+	if err := relayGenerateObjectResult(ctx, relay, result); err != nil {
+		_ = relay.Discard(ctx, err.Error())
+		return nil, err
+	}
+	if err := relay.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return GenerateObjectResultFromAI(result), nil
+}
+
+func (a *Activities) StreamObject(ctx context.Context, args StreamObjectArgs) (*StreamObjectResult, error) {
+	model, err := a.languageModel(args.ModelID)
+	if err != nil {
+		return nil, err
+	}
+	options, streamOptions := extractStreamObjectStreamOptions(args.Options.ToAI(model))
+	if streamOptions.Lane == "" {
+		streamOptions.Lane = streaming.LaneObject
+	}
+	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
+		return nil, err
+	}
+	streamResult, err := ai.StreamObject(ctx, options)
+	if err != nil {
+		failRelay(ctx, relay, err)
+		return nil, err
+	}
+	if streamResult == nil {
+		err := errors.New("model returned nil object stream result")
+		failRelay(ctx, relay, err)
+		return nil, err
+	}
+	if streamResult.Stream == nil {
+		err := errors.New("model returned nil object stream")
+		failRelay(ctx, relay, err)
+		return nil, err
+	}
+	return a.consumeObjectStream(ctx, relay, streamResult)
 }
 
 func (a *Activities) InvokeEmbeddingModel(ctx context.Context, args InvokeEmbeddingModelArgs) (*InvokeEmbeddingModelResult, error) {
