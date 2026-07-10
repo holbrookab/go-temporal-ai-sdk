@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
@@ -51,8 +52,14 @@ func ToolDefinitionsFromAI(tools map[string]ai.Tool) []ToolDefinition {
 	if len(tools) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	definitions := make([]ToolDefinition, 0, len(tools))
-	for name, tool := range tools {
+	for _, name := range names {
+		tool := tools[name]
 		definitions = append(definitions, ToolDefinitionFromAI(name, tool))
 	}
 	return definitions
@@ -154,6 +161,15 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 	if args.Approval != nil {
 		if args.Approval.Approved == nil || !*args.Approval.Approved {
 			return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, args.Approval.Reason))
+		}
+		if tool.NeedsApproval != nil {
+			decision, err := ai.ResolveToolApproval(ctx, map[string]ai.Tool{args.ToolName: tool}, call)
+			if err != nil {
+				return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
+			}
+			if decision.Type == ai.ApprovalDecisionDenied {
+				return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, decision.Reason))
+			}
 		}
 	} else if tool.RequiresApproval || tool.NeedsApproval != nil {
 		decision, err := ai.ResolveToolApproval(ctx, map[string]ai.Tool{args.ToolName: tool}, call)

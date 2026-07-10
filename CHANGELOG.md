@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-10
+
+- Bumped `go-ai` to `v0.3.0` and preserved its signed tool-approval request and
+  approval-response parts across Temporal message and stream serialization.
+- Rejected provider streams that close without generated output, matching the
+  new `go-ai` stream behavior.
+- Made map-to-tool-definition conversion deterministic and revalidated dynamic
+  approval policy immediately before executing an already approved tool.
+- Added inspectable asynchronous subagents backed by Temporal child workflows,
+  including durable progress snapshots and built-in list, inspect, wait,
+  message, and cancel tools for the parent agent.
+
 ## 0.2.19 - 2026-06-01
 
 - Added typed `streaming.ErrStreamNotFound` handling and

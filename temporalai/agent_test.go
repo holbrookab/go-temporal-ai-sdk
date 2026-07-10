@@ -781,6 +781,177 @@ func TestRunAgentCanDisableLocalToolTimeoutFallback(t *testing.T) {
 	}
 }
 
+func TestRunAgentSpawnsInspectableSubagentWithoutBlockingParent(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var modelCalls int
+
+	env.RegisterWorkflowWithOptions(testInspectableSubagentChildWorkflow, workflow.RegisterOptions{Name: "testInspectableSubagentChild"})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			modelCalls++
+			toolNames := map[string]bool{}
+			for _, tool := range args.Options.Tools {
+				toolNames[tool.Name] = true
+			}
+			if !toolNames["research"] || !toolNames[InspectSubagentToolName] || !toolNames[WaitSubagentToolName] || !toolNames[MessageSubagentToolName] {
+				t.Fatalf("subagent tools missing from model options: %#v", args.Options.Tools)
+			}
+			switch modelCalls {
+			case 1:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-research", ToolName: "research", Input: map[string]any{"task": "inspect the repository"}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 2:
+				// Reaching this call proves the research child did not have to finish
+				// before the parent model loop continued.
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-inspect", ToolName: InspectSubagentToolName, Input: map[string]any{"subagentId": "research-call-research"}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 3:
+				last := args.Options.Prompt[len(args.Options.Prompt)-1]
+				data, err := json.Marshal(last.Content[0].Output.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var inspected SubagentSnapshot
+				if err := json.Unmarshal(data, &inspected); err != nil {
+					t.Fatal(err)
+				}
+				if inspected.Status != SubagentStatusRunning {
+					t.Fatalf("inspect result = %#v", inspected)
+				}
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-message", ToolName: MessageSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "message": "focus on workflow boundaries"}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 4:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-wait", ToolName: WaitSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "timeoutSeconds": 5}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			default:
+				last := args.Options.Prompt[len(args.Options.Prompt)-1]
+				if last.Role != ai.RoleTool || len(last.Content) != 1 {
+					t.Fatalf("wait result prompt = %#v", args.Options.Prompt)
+				}
+				data, err := json.Marshal(last.Content[0].Output.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var waited SubagentWaitResult
+				if err := json.Unmarshal(data, &waited); err != nil {
+					t.Fatal(err)
+				}
+				if waited.Snapshot.Status != SubagentStatusCompleted || waited.Snapshot.Text != "focus on workflow boundaries" {
+					t.Fatalf("wait result = %#v", waited)
+				}
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "text", Text: "research complete"}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+				}, nil
+			}
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:       "parent",
+		ModelID:       "model-1",
+		Prompt:        "delegate research",
+		ToolExecution: ToolExecutionSequential,
+		Subagents: []SubagentDefinition{{
+			Tool: activities.ToolDefinition{Name: "research", Description: "Research a task."},
+			Agent: &AgentInput{
+				AgentID: "researcher",
+				ModelID: "child-model",
+			},
+			WorkflowType: "testInspectableSubagentChild",
+		}},
+	})
+
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("workflow failed: %v", env.GetWorkflowError())
+	}
+	var result AgentResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "research complete" || modelCalls != 5 {
+		t.Fatalf("result=%#v modelCalls=%d", result, modelCalls)
+	}
+}
+
+func TestRunAgentCanCancelBackgroundSubagent(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var modelCalls int
+
+	env.RegisterWorkflowWithOptions(testInspectableSubagentChildWorkflow, workflow.RegisterOptions{Name: "testCancelableSubagentChild"})
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+			modelCalls++
+			switch modelCalls {
+			case 1:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-research", ToolName: "research", Input: map[string]any{"task": "wait for cancellation"}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 2:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-cancel", ToolName: CancelSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "reason": "no longer needed"}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			case 3:
+				return &activities.InvokeModelResult{
+					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-wait", ToolName: WaitSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "timeoutSeconds": 5}}},
+					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+				}, nil
+			default:
+				last := args.Options.Prompt[len(args.Options.Prompt)-1]
+				data, err := json.Marshal(last.Content[0].Output.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var waited SubagentWaitResult
+				if err := json.Unmarshal(data, &waited); err != nil {
+					t.Fatal(err)
+				}
+				if waited.Snapshot.Status != SubagentStatusCanceled {
+					t.Fatalf("wait result = %#v", waited)
+				}
+				return &activities.InvokeModelResult{Content: []activities.Part{{Type: "text", Text: "canceled"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, nil
+			}
+		},
+		activity.RegisterOptions{Name: activities.InvokeModelActivity},
+	)
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID:       "parent",
+		ModelID:       "model-1",
+		Prompt:        "delegate then cancel",
+		ToolExecution: ToolExecutionSequential,
+		Subagents: []SubagentDefinition{{
+			Tool:         activities.ToolDefinition{Name: "research"},
+			Agent:        &AgentInput{AgentID: "researcher", ModelID: "child-model"},
+			WorkflowType: "testCancelableSubagentChild",
+		}},
+	})
+
+	if env.GetWorkflowError() != nil {
+		t.Fatalf("workflow failed: %v", env.GetWorkflowError())
+	}
+	var result AgentResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "canceled" || modelCalls != 4 {
+		t.Fatalf("result=%#v modelCalls=%d", result, modelCalls)
+	}
+}
+
 func registerOneToolAgentActivities(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
 	t.Helper()
 	var modelCalls int
@@ -847,4 +1018,22 @@ func testAgentWorkflowWithOneLocalToolAttempt(ctx workflow.Context, input AgentI
 			},
 		},
 	})
+}
+
+func testInspectableSubagentChildWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
+	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusRunning, Sequence: 3, StepNumber: 0, StepType: "research", Text: "working"})
+	var message SubagentMessage
+	received := false
+	selector := workflow.NewSelector(ctx)
+	selector.AddReceive(workflow.GetSignalChannel(ctx, SubagentMessageSignalName), func(channel workflow.ReceiveChannel, _ bool) {
+		channel.Receive(ctx, &message)
+		received = true
+	})
+	selector.AddReceive(ctx.Done(), func(workflow.ReceiveChannel, bool) {})
+	selector.Select(ctx)
+	if !received {
+		return nil, ctx.Err()
+	}
+	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusCompleted, Sequence: 4, StepNumber: 1, StepType: "summary", Text: message.Content, FinishReason: ai.FinishStop})
+	return &AgentResult{AgentID: input.AgentID, ModelID: input.ModelID, Text: message.Content, FinishReason: ai.FinishStop}, nil
 }

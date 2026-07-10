@@ -765,6 +765,40 @@ func TestInvokeToolApprovedDecisionExecutesAndCanSuppressInputLifecycle(t *testi
 	}
 }
 
+func TestInvokeToolApprovedDecisionRevalidatesCurrentPolicy(t *testing.T) {
+	executed := false
+	approved := true
+	acts := New(Options{
+		Tools: map[string]ai.Tool{
+			"write": {
+				NeedsApproval: func(context.Context, ai.ToolCall) (ai.ApprovalDecision, error) {
+					return ai.Denied("policy changed"), nil
+				},
+				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
+					executed = true
+					return "written", nil
+				},
+			},
+		},
+	})
+
+	result, err := acts.InvokeTool(context.Background(), InvokeToolArgs{
+		ToolCallID: "call-1",
+		ToolName:   "write",
+		Input:      map[string]any{"id": "1"},
+		Approval:   &ToolApprovalState{ApprovalID: "approval-1", Approved: &approved},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Fatal("tool executed after current policy denied it")
+	}
+	if result.Output.Type != "execution-denied" || result.Output.Reason != "policy changed" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestInvokeToolDurableInputFailurePreventsExecution(t *testing.T) {
 	connector := &recordingConnector{
 		toolPersistErrForEvent: map[streaming.ToolLifecycleEvent]error{
@@ -1172,6 +1206,41 @@ func TestWirePreservesToolMetadataAndPerformance(t *testing.T) {
 	}
 }
 
+func TestWirePreservesToolApprovalParts(t *testing.T) {
+	requestWire := PartFromAI(ai.ToolApprovalRequestPart{
+		ApprovalID:  "approval-1",
+		ToolCallID:  "call-1",
+		Signature:   "signed",
+		IsAutomatic: true,
+	})
+	requestAI, ok := requestWire.ToAI().(ai.ToolApprovalRequestPart)
+	if !ok || requestAI.ApprovalID != "approval-1" || requestAI.ToolCallID != "call-1" || requestAI.Signature != "signed" || !requestAI.IsAutomatic {
+		t.Fatalf("approval request round trip = %#v", requestWire.ToAI())
+	}
+
+	responseWire := PartFromAI(ai.ToolApprovalResponsePart{
+		ApprovalID:       "approval-1",
+		Approved:         false,
+		Reason:           "denied",
+		ProviderExecuted: true,
+		ProviderMetadata: ai.ProviderMetadata{"provider": "mock"},
+		ProviderOptions:  ai.ProviderOptions{"option": "value"},
+	})
+	responseAI, ok := responseWire.ToAI().(ai.ToolApprovalResponsePart)
+	if !ok || responseAI.ApprovalID != "approval-1" || responseAI.Approved || responseAI.Reason != "denied" || !responseAI.ProviderExecuted || !reflect.DeepEqual(responseAI.ProviderMetadata, ai.ProviderMetadata{"provider": "mock"}) || !reflect.DeepEqual(responseAI.ProviderOptions, ai.ProviderOptions{"option": "value"}) {
+		t.Fatalf("approval response round trip = %#v", responseWire.ToAI())
+	}
+
+	approved := true
+	automatic := false
+	providerExecuted := true
+	streamWire := StreamPartFromAI(ai.StreamPart{Type: "tool-approval-response", ID: "approval-1", ToolCallID: "call-1", Signature: "signed", Approved: &approved, IsAutomatic: &automatic, Reason: "ok", ProviderExecuted: &providerExecuted})
+	streamAI := streamWire.ToAI()
+	if streamAI.Signature != "signed" || streamAI.Approved == nil || !*streamAI.Approved || streamAI.IsAutomatic == nil || *streamAI.IsAutomatic || streamAI.Reason != "ok" || streamAI.ProviderExecuted == nil || !*streamAI.ProviderExecuted {
+		t.Fatalf("approval stream round trip = %#v", streamAI)
+	}
+}
+
 func TestInvokeModelStreamDiscardsErroredStream(t *testing.T) {
 	model := ai.NewMockLanguageModel("stream-1")
 	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
@@ -1202,6 +1271,41 @@ func TestInvokeModelStreamDiscardsErroredStream(t *testing.T) {
 	}
 	if len(connector.completions) != 1 || connector.completions[0].Status != streaming.AttemptDiscarded {
 		t.Fatalf("completions = %#v", connector.completions)
+	}
+}
+
+func TestInvokeModelStreamRejectsEmptyProviderStream(t *testing.T) {
+	model := ai.NewMockLanguageModel("stream-1")
+	model.StreamFunc = func(context.Context, ai.LanguageModelCallOptions) (*ai.LanguageModelStreamResult, error) {
+		ch := make(chan ai.StreamPart)
+		close(ch)
+		return &ai.LanguageModelStreamResult{Stream: ch}, nil
+	}
+	acts := New(Options{ModelProvider: ai.CustomProvider{
+		LanguageModels: map[string]ai.LanguageModel{"stream-1": model},
+	}})
+
+	_, err := acts.InvokeModelStream(context.Background(), InvokeModelStreamArgs{
+		ModelID: "stream-1",
+		Options: LanguageModelCallOptionsFromAI(ai.LanguageModelCallOptions{}),
+	})
+	if !ai.IsNoOutputGeneratedError(err) {
+		t.Fatalf("expected no output generated error, got %T %v", err, err)
+	}
+}
+
+func TestToolDefinitionsFromAISortsMapKeys(t *testing.T) {
+	definitions := ToolDefinitionsFromAI(map[string]ai.Tool{
+		"zebra":  {},
+		"alpha":  {},
+		"middle": {},
+	})
+	var names []string
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"alpha", "middle", "zebra"}) {
+		t.Fatalf("tool order = %#v", names)
 	}
 }
 

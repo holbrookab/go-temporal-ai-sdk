@@ -76,6 +76,10 @@ type Part struct {
 	ToolName         string              `json:"toolName,omitempty"`
 	Input            any                 `json:"input,omitempty"`
 	InputRaw         string              `json:"inputRaw,omitempty"`
+	Signature        string              `json:"signature,omitempty"`
+	Approved         *bool               `json:"approved,omitempty"`
+	IsAutomatic      *bool               `json:"isAutomatic,omitempty"`
+	Reason           string              `json:"reason,omitempty"`
 	Output           ai.ToolResultOutput `json:"output,omitempty"`
 	Result           any                 `json:"result,omitempty"`
 	IsError          bool                `json:"isError,omitempty"`
@@ -158,6 +162,10 @@ type StreamPart struct {
 	ToolName         string              `json:"toolName,omitempty"`
 	ToolInputDelta   string              `json:"toolInputDelta,omitempty"`
 	ToolInput        string              `json:"toolInput,omitempty"`
+	Signature        string              `json:"signature,omitempty"`
+	Approved         *bool               `json:"approved,omitempty"`
+	IsAutomatic      *bool               `json:"isAutomatic,omitempty"`
+	Reason           string              `json:"reason,omitempty"`
 	Content          *Part               `json:"content,omitempty"`
 	FinishReason     ai.FinishReason     `json:"finishReason,omitempty"`
 	Usage            ai.Usage            `json:"usage,omitempty"`
@@ -167,6 +175,10 @@ type StreamPart struct {
 	Performance      ai.StepPerformance  `json:"performance,omitempty"`
 	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
+	ProviderExecuted *bool               `json:"providerExecuted,omitempty"`
+	Dynamic          *bool               `json:"dynamic,omitempty"`
+	Preliminary      *bool               `json:"preliminary,omitempty"`
+	Title            string              `json:"title,omitempty"`
 	Raw              any                 `json:"raw,omitempty"`
 	AbortReason      string              `json:"abortReason,omitempty"`
 	ErrorText        string              `json:"errorText,omitempty"`
@@ -393,6 +405,10 @@ func PartFromAI(part ai.Part) Part {
 			errorText = part.Error.Error()
 		}
 		return Part{Type: "tool-call", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, ErrorText: errorText, Title: part.Title, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+	case ai.ToolApprovalRequestPart:
+		return Part{Type: "tool-approval-request", ID: part.ApprovalID, ToolCallID: part.ToolCallID, Signature: part.Signature, IsAutomatic: boolPointer(part.IsAutomatic)}
+	case ai.ToolApprovalResponsePart:
+		return Part{Type: "tool-approval-response", ID: part.ApprovalID, Approved: boolPointer(part.Approved), Reason: part.Reason, ProviderExecuted: part.ProviderExecuted, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.ToolResultPart:
 		return Part{Type: "tool-result", ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case ai.SourcePart:
@@ -414,6 +430,10 @@ func (part Part) ToAI() ai.Part {
 		return ai.ReasoningFilePart{Data: part.Data, MediaType: part.MediaType, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-call":
 		return ai.ToolCallPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: toolCallInputFromRaw(part.Input, part.InputRaw), InputRaw: part.InputRaw, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Invalid: part.Invalid, Title: part.Title, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
+	case "tool-approval-request":
+		return ai.ToolApprovalRequestPart{ApprovalID: part.ID, ToolCallID: part.ToolCallID, Signature: part.Signature, IsAutomatic: boolValue(part.IsAutomatic)}
+	case "tool-approval-response":
+		return ai.ToolApprovalResponsePart{ApprovalID: part.ID, Approved: boolValue(part.Approved), Reason: part.Reason, ProviderExecuted: part.ProviderExecuted, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "tool-result":
 		return ai.ToolResultPart{ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: part.Input, Output: part.Output, Result: part.Result, IsError: part.IsError, ProviderExecuted: part.ProviderExecuted, Dynamic: part.Dynamic, Preliminary: part.Preliminary, ToolMetadata: part.ToolMetadata, ProviderMetadata: part.ProviderMetadata, ProviderOptions: part.ProviderOptions}
 	case "source":
@@ -570,6 +590,10 @@ func GenerateResultFromAIStreamParts(parts []ai.StreamPart, request ai.RequestMe
 			if part.Content != nil {
 				result.Content = append(result.Content, PartFromAI(part.Content))
 			}
+		case "tool-approval-request":
+			result.Content = append(result.Content, Part{Type: part.Type, ID: part.ID, ToolCallID: part.ToolCallID, Signature: part.Signature, IsAutomatic: part.IsAutomatic})
+		case "tool-approval-response":
+			result.Content = append(result.Content, Part{Type: part.Type, ID: part.ID, Approved: part.Approved, Reason: part.Reason, ProviderExecuted: boolValue(part.ProviderExecuted), ProviderMetadata: part.ProviderMetadata})
 		case "finish":
 			result.FinishReason = part.FinishReason
 			result.Usage = part.Usage
@@ -595,6 +619,14 @@ func toolCallInputFromRaw(input any, inputRaw string) any {
 		return input
 	}
 	return parsed
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
 }
 
 func (result LanguageModelGenerateResult) ToAI() ai.LanguageModelGenerateResult {
@@ -633,6 +665,10 @@ func StreamPartFromAI(part ai.StreamPart) StreamPart {
 		ToolName:         part.ToolName,
 		ToolInputDelta:   part.ToolInputDelta,
 		ToolInput:        part.ToolInput,
+		Signature:        part.Signature,
+		Approved:         part.Approved,
+		IsAutomatic:      part.IsAutomatic,
+		Reason:           part.Reason,
 		Content:          content,
 		FinishReason:     part.FinishReason,
 		Usage:            part.Usage,
@@ -642,6 +678,10 @@ func StreamPartFromAI(part ai.StreamPart) StreamPart {
 		Performance:      part.Performance,
 		ToolMetadata:     part.ToolMetadata,
 		ProviderMetadata: part.ProviderMetadata,
+		ProviderExecuted: part.ProviderExecuted,
+		Dynamic:          part.Dynamic,
+		Preliminary:      part.Preliminary,
+		Title:            part.Title,
 		Raw:              part.Raw,
 		AbortReason:      part.AbortReason,
 		ErrorText:        errorText,
@@ -678,6 +718,10 @@ func (part StreamPart) ToAI() ai.StreamPart {
 		ToolName:         part.ToolName,
 		ToolInputDelta:   part.ToolInputDelta,
 		ToolInput:        part.ToolInput,
+		Signature:        part.Signature,
+		Approved:         part.Approved,
+		IsAutomatic:      part.IsAutomatic,
+		Reason:           part.Reason,
 		Content:          content,
 		FinishReason:     part.FinishReason,
 		Usage:            part.Usage,
@@ -687,6 +731,10 @@ func (part StreamPart) ToAI() ai.StreamPart {
 		Performance:      part.Performance,
 		ToolMetadata:     part.ToolMetadata,
 		ProviderMetadata: part.ProviderMetadata,
+		ProviderExecuted: part.ProviderExecuted,
+		Dynamic:          part.Dynamic,
+		Preliminary:      part.Preliminary,
+		Title:            part.Title,
 		Raw:              part.Raw,
 		AbortReason:      part.AbortReason,
 	}

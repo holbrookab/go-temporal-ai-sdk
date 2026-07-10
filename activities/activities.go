@@ -177,6 +177,7 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
 	outputTracker := newPartialOutputTracker(options.ResponseFormat)
 	parts := []ai.StreamPart{}
+	outputSeen := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,6 +186,11 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 			return nil, ctx.Err()
 		case part, ok := <-streamResult.Stream:
 			if !ok {
+				if !outputSeen {
+					err := ai.NewNoOutputGeneratedError("Model stream ended without producing output.", nil)
+					_ = relay.Discard(ctx, err.Error())
+					return nil, err
+				}
 				if err := relay.Commit(ctx); err != nil {
 					return nil, err
 				}
@@ -194,6 +200,9 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 				}, nil
 			}
 			part, extraParts := outputTracker.enrich(part)
+			if isGeneratedOutputPart(part) {
+				outputSeen = true
+			}
 			if isReturnedStreamPart(part) {
 				parts = append(parts, part)
 			}
@@ -229,10 +238,27 @@ func isReturnedStreamPart(part ai.StreamPart) bool {
 		"tool-input-delta",
 		"tool-input-end",
 		"tool-call",
+		"tool-approval-request",
+		"tool-approval-response",
 		"file",
 		"reasoning-file",
 		"source",
 		"finish":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGeneratedOutputPart(part ai.StreamPart) bool {
+	switch part.Type {
+	case "text-delta":
+		return part.TextDelta != ""
+	case "reasoning-delta":
+		return part.ReasoningDelta != ""
+	case "tool-input-delta":
+		return part.ToolInputDelta != ""
+	case "file", "reasoning-file", "tool-call":
 		return true
 	default:
 		return false

@@ -378,6 +378,56 @@ Nested agents can be modeled as child workflows with
 `temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
 on child workflow boundaries rather than every nested step.
 
+Inspectable background subagents can also be declared directly on `AgentInput`.
+The model-facing subagent remains a tool, but invoking it starts an asynchronous
+Temporal child workflow and immediately returns a durable `subagentId`. The
+parent model can continue and use the built-in `list_subagents`,
+`inspect_subagent`, `wait_subagent`, `message_subagent`, and `cancel_subagent`
+tools to supervise it.
+
+```go
+result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
+    AgentID: "coordinator",
+    ModelID: "model-id",
+    Prompt:  "Delegate the repository research and supervise it.",
+    Subagents: []temporalai.SubagentDefinition{{
+        Tool: activities.ToolDefinition{
+            Name:        "research",
+            Description: "Research a repository question in an isolated context.",
+        },
+        Agent: &temporalai.AgentInput{
+            AgentID:      "researcher",
+            ModelID:      "model-id",
+            Instructions: "Research carefully and finish with a concise summary.",
+            Tools:        researchTools,
+        },
+        TaskQueue: "research-agents",
+        ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+    }},
+})
+```
+
+The default subagent input schema accepts `{ "task": "..." }`; provide a custom
+schema on `SubagentDefinition.Tool` when the delegated task has additional
+fields. `WorkflowType` defaults to `temporalai.AgentWorkflow`, which must be
+registered on the selected worker. A custom registered workflow name can be
+provided when the child needs a specialized wrapper.
+
+Child `RunAgent` executions send coarse step snapshots back to the parent with
+the durable `temporalai.SubagentProgressSignalName` signal. Token-level and tool
+streaming continues through the configured stream connector using a nested
+`AgentID`/`TaskID` scope, avoiding one Workflow History event per token. External
+services can inspect the parent's current snapshots through the
+`temporalai.SubagentsQueryName` Query. Additional parent instructions are sent
+to the child with `temporalai.SubagentMessageSignalName` and are appended as a
+user message before the child's next model step.
+
+Subagent launch tools cannot themselves require approval. Tools inside the child
+agent can still use the normal durable approval flow. The default
+`wait_subagent` timeout is 30 seconds and can be overridden with
+`timeoutSeconds`; a timeout returns the latest snapshot rather than failing the
+parent agent.
+
 Tool lifecycle event IDs are stable per tool call: `tool:<toolCallId>:input`,
 `tool:<toolCallId>:approval-request`,
 `tool:<toolCallId>:approval-response`, and `tool:<toolCallId>:terminal`.
@@ -404,6 +454,20 @@ default OS cache:
 ```bash
 GOCACHE=$PWD/.cache/go-build go test ./...
 ```
+
+Repository releases are tagged and published by the manual GitHub Actions
+`Release` workflow. Prepare a dated `CHANGELOG.md` section, push the release
+commit to `main`, then dispatch the workflow with the version without a `v`
+prefix:
+
+```bash
+gh workflow run release.yml --ref main -f version=0.3.0
+```
+
+The workflow validates the changelog section, runs `go test ./...` and
+`go vet ./...`, creates the annotated `v<version>` tag on the selected commit,
+and publishes a GitHub release using that changelog section as its notes. It is
+safe to rerun when the existing tag points to the same commit.
 
 `go-ai` provider packages are imported by workers directly. New providers in
 `go-ai` releases, such as Anthropic or community OpenRouter, do not require an

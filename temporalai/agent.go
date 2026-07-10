@@ -44,6 +44,8 @@ type AgentInput struct {
 	DefaultToolBoundary      activities.ToolExecutionBoundary    `json:"defaultToolBoundary,omitempty"`
 	LocalToolTimeoutFallback LocalToolTimeoutFallback            `json:"localToolTimeoutFallback,omitempty"`
 	ToolArtifacts            activities.ToolArtifactPolicy       `json:"toolArtifacts,omitempty"`
+	Subagents                []SubagentDefinition                `json:"subagents,omitempty"`
+	SubagentExecution        *SubagentExecutionContext           `json:"subagentExecution,omitempty"`
 }
 
 type AgentResult struct {
@@ -115,8 +117,36 @@ func toolArtifactPolicyForActivity(policy activities.ToolArtifactPolicy) *activi
 }
 
 func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...ActivityOptions) (*AgentResult, error) {
+	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusRunning, Sequence: 1})
+	result, err := runAgentLoop(ctx, input, activityOptions...)
+	snapshot := SubagentSnapshot{Sequence: 2}
+	if result != nil {
+		snapshot.Sequence = len(result.Steps) + 2
+		snapshot.Text = result.Text
+		snapshot.FinishReason = result.FinishReason
+		if len(result.Steps) > 0 {
+			last := result.Steps[len(result.Steps)-1]
+			snapshot.StepNumber = last.StepNumber
+			snapshot.StepType = last.StepType
+		}
+	}
+	if err != nil {
+		snapshot.Status = SubagentStatusFailed
+		snapshot.Error = err.Error()
+	} else {
+		snapshot.Status = SubagentStatusCompleted
+	}
+	publishSubagentProgress(ctx, input, snapshot)
+	return result, err
+}
+
+func runAgentLoop(ctx workflow.Context, input AgentInput, activityOptions ...ActivityOptions) (*AgentResult, error) {
 	if input.ModelID == "" {
 		return nil, fmt.Errorf("modelId is required")
+	}
+	subagents, err := newSubagentManager(ctx, input)
+	if err != nil {
+		return nil, err
 	}
 	input.ToolArtifacts = workflowToolArtifactPolicy(ctx, input.ToolArtifacts)
 	maxSteps := input.MaxSteps
@@ -130,6 +160,7 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 		Messages: append([]activities.Message(nil), messages...),
 	}
 	for stepNumber := 0; stepNumber < maxSteps; stepNumber++ {
+		messages = append(messages, drainSubagentMessages(ctx, input)...)
 		stepID := agentStepID(stepNumber)
 		stepType := agentStepType(stepNumber)
 		callOptions := input.ModelOptions
@@ -138,7 +169,7 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 		if stepNumber == 0 && input.FirstToolChoice.Type != "" {
 			toolChoice = input.FirstToolChoice
 		}
-		callOptions.Tools = activities.ModelToolsFromDefinitions(input.Tools, toolChoice)
+		callOptions.Tools = activities.ModelToolsFromDefinitions(agentToolDefinitions(input), toolChoice)
 		if toolChoice.Type != "" {
 			callOptions.ToolChoice = toolChoice
 		} else {
@@ -169,11 +200,12 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 
 		messages = append(messages, activities.Message{Role: ai.RoleAssistant, Content: modelResult.Content})
 		result.Messages = append([]activities.Message(nil), messages...)
+		publishSubagentStep(ctx, input, step, stepNumber+2)
 		if len(step.ToolCalls) == 0 {
 			result.Steps = append(result.Steps, step)
 			return result, nil
 		}
-		toolResults, err := executeAgentTools(ctx, input, messages, step.ToolCalls, activityOptions...)
+		toolResults, err := executeAgentTools(ctx, subagents, input, messages, step.ToolCalls, activityOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +218,22 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 		result.Messages = append([]activities.Message(nil), messages...)
 	}
 	return result, nil
+}
+
+func publishSubagentStep(ctx workflow.Context, input AgentInput, step AgentStep, sequence int) {
+	toolCalls := make([]SubagentToolCallSnapshot, 0, len(step.ToolCalls))
+	for _, call := range step.ToolCalls {
+		toolCalls = append(toolCalls, SubagentToolCallSnapshot{ToolCallID: call.ToolCallID, ToolName: call.ToolName})
+	}
+	publishSubagentProgress(ctx, input, SubagentSnapshot{
+		Status:       SubagentStatusRunning,
+		Sequence:     sequence,
+		StepNumber:   step.StepNumber,
+		StepType:     step.StepType,
+		Text:         step.Text,
+		ToolCalls:    toolCalls,
+		FinishReason: step.ModelResult.FinishReason.Unified,
+	})
 }
 
 func ExecuteAgentChildWorkflow(ctx workflow.Context, workflowType any, input AgentInput, options ...workflow.ChildWorkflowOptions) (*AgentResult, error) {
@@ -215,20 +263,20 @@ func invokeAgentModel(ctx workflow.Context, input AgentInput, options activities
 	return wire, nil
 }
 
-func executeAgentTools(ctx workflow.Context, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentTools(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	if input.ToolExecution == ToolExecutionSequential {
-		return executeAgentToolsSequential(ctx, input, messages, calls, activityOptions...)
+		return executeAgentToolsSequential(ctx, subagents, input, messages, calls, activityOptions...)
 	}
-	return executeAgentToolsParallel(ctx, input, messages, calls, activityOptions...)
+	return executeAgentToolsParallel(ctx, subagents, input, messages, calls, activityOptions...)
 }
 
-func executeAgentToolsSequential(ctx workflow.Context, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentToolsSequential(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	results := make([]activities.InvokeToolResult, 0, len(calls))
 	for _, call := range calls {
 		if call.ProviderExecuted {
 			continue
 		}
-		result, err := executeOneAgentTool(ctx, input, messages, call, activityOptions...)
+		result, err := executeOneAgentTool(ctx, subagents, input, messages, call, activityOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +285,7 @@ func executeAgentToolsSequential(ctx workflow.Context, input AgentInput, message
 	return results, nil
 }
 
-func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentToolsParallel(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	type toolOutcome struct {
 		index  int
 		result *activities.InvokeToolResult
@@ -253,7 +301,7 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 		toolCall := call
 		count++
 		workflow.Go(ctx, func(ctx workflow.Context) {
-			result, err := executeOneAgentTool(ctx, input, messages, toolCall, activityOptions...)
+			result, err := executeOneAgentTool(ctx, subagents, input, messages, toolCall, activityOptions...)
 			outcomes.Send(ctx, toolOutcome{index: index, result: result, err: err})
 		})
 	}
@@ -271,7 +319,10 @@ func executeAgentToolsParallel(ctx workflow.Context, input AgentInput, messages 
 	return results, nil
 }
 
-func executeOneAgentTool(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
+func executeOneAgentTool(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, call AgentToolCall, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
+	if result, handled, err := subagents.execute(ctx, call); handled {
+		return result, err
+	}
 	ao := ActivityOptions{}
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
