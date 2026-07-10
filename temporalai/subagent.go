@@ -9,6 +9,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/workflow"
 )
@@ -560,16 +561,47 @@ func subagentToolError(call AgentToolCall, err error) error {
 	return fmt.Errorf("%s: %w", call.ToolName, err)
 }
 
-func publishSubagentProgress(ctx workflow.Context, input AgentInput, snapshot SubagentSnapshot) {
+func publishSubagentProgress(ctx workflow.Context, input AgentInput, snapshot SubagentSnapshot, writeRecords bool, activityOptions ...ActivityOptions) error {
 	execution := input.SubagentExecution
 	if execution == nil || execution.ParentWorkflowID == "" {
-		return
+		return nil
 	}
 	snapshot.SubagentID = execution.SubagentID
 	snapshot.ToolCallID = execution.ToolCallID
 	snapshot.ToolName = execution.ToolName
 	snapshot.UpdatedAt = workflow.Now(ctx)
+	if streamID := updateStreamID(ctx, input); writeRecords && streamID != "" {
+		data := map[string]any{
+			"subagentId":   snapshot.SubagentID,
+			"toolCallId":   snapshot.ToolCallID,
+			"toolName":     snapshot.ToolName,
+			"workflowId":   snapshot.WorkflowID,
+			"runId":        snapshot.RunID,
+			"sequence":     snapshot.Sequence,
+			"stepNumber":   snapshot.StepNumber,
+			"stepType":     snapshot.StepType,
+			"text":         snapshot.Text,
+			"toolCalls":    snapshot.ToolCalls,
+			"finishReason": snapshot.FinishReason,
+			"error":        snapshot.Error,
+		}
+		scope := input.Stream.Scope
+		if scope.AgentID == "" {
+			scope.AgentID = input.AgentID
+		}
+		if err := WriteRecord(ctx, streamID, updates.WorkflowRecord{
+			RecordID:      "subagent:" + snapshot.SubagentID,
+			RecordVersion: snapshot.Sequence,
+			Kind:          updates.RecordKindSubagent,
+			Status:        string(snapshot.Status),
+			Data:          data,
+			Scope:         scope,
+		}, "", activityOptions...); err != nil {
+			return err
+		}
+	}
 	_ = workflow.SignalExternalWorkflow(ctx, execution.ParentWorkflowID, execution.ParentRunID, SubagentProgressSignalName, snapshot).Get(ctx, nil)
+	return nil
 }
 
 func drainSubagentMessages(ctx workflow.Context, input AgentInput) []activities.Message {

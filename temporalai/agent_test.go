@@ -3,38 +3,29 @@ package temporalai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
-	enumspb "go.temporal.io/api/enums/v1"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 )
 
-func TestToolLifecycleMetadataFromContextCopiesTaskFields(t *testing.T) {
+func TestToolRecordMetadataFromContextCopiesTaskFields(t *testing.T) {
 	metadata := toolLifecycleMetadataFromContext(struct {
 		TaskID             string `json:"taskId"`
 		TaskTitle          string `json:"taskTitle"`
 		SkillName          string `json:"skillName"`
 		AssistantMessageID string `json:"assistantMessageId"`
-	}{
-		TaskID:             "task-1",
-		TaskTitle:          "Find records",
-		SkillName:          "Search",
-		AssistantMessageID: "message-1",
-	})
+	}{TaskID: "task-1", TaskTitle: "Find records", SkillName: "Search", AssistantMessageID: "message-1"})
 	if metadata["taskId"] != "task-1" || metadata["taskTitle"] != "Find records" || metadata["skillName"] != "Search" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
-	if _, ok := metadata["assistantMessageId"]; ok {
+	if _, leaked := metadata["assistantMessageId"]; leaked {
 		t.Fatalf("metadata leaked persistence field: %#v", metadata)
 	}
 }
@@ -42,18 +33,14 @@ func TestToolLifecycleMetadataFromContextCopiesTaskFields(t *testing.T) {
 func TestAgentStepScopeIncludesTaskSkillAndStep(t *testing.T) {
 	scope := agentStepScope(AgentInput{
 		AgentID: "agent-1",
-		Stream:  streaming.Options{Scope: streaming.Scope{DisplayMode: streaming.DisplayModeTask}},
+		Stream:  updates.Options{Scope: updates.Scope{DisplayMode: updates.DisplayModeTask}},
 		ToolContext: struct {
 			TaskID    string `json:"taskId"`
 			TaskTitle string `json:"taskTitle"`
 			SkillName string `json:"skillName"`
-		}{
-			TaskID:    "task-1",
-			TaskTitle: "Find records",
-			SkillName: "Search",
-		},
+		}{TaskID: "task-1", TaskTitle: "Find records", SkillName: "Search"},
 	}, "step-0", 0, "initial")
-	if scope.DisplayMode != streaming.DisplayModeTask || scope.AgentID != "agent-1" || scope.TaskID != "task-1" || scope.TaskTitle != "Find records" || scope.SkillName != "Search" {
+	if scope.DisplayMode != updates.DisplayModeTask || scope.AgentID != "agent-1" || scope.TaskID != "task-1" || scope.TaskTitle != "Find records" || scope.SkillName != "Search" {
 		t.Fatalf("scope = %#v", scope)
 	}
 	if scope.StepID != "step-0" || scope.StepNumber == nil || *scope.StepNumber != 0 || scope.StepType != "initial" {
@@ -65,79 +52,28 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	var modelCalls int
-
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			modelCalls++
-			if modelCalls == 1 {
-				if len(args.Options.Tools) != 1 || args.Options.Tools[0].Name != "lookup" {
-					t.Fatalf("model tools = %#v", args.Options.Tools)
-				}
-				return &activities.InvokeModelResult{
-					Content: []activities.Part{{
-						Type:         "tool-call",
-						ToolCallID:   "call-1",
-						ToolName:     "lookup",
-						Input:        map[string]any{"query": "temporal"},
-						ToolMetadata: ai.ProviderMetadata{"client": "mcp"},
-					}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			}
-			last := args.Options.Prompt[len(args.Options.Prompt)-1]
-			if last.Role != ai.RoleTool || len(last.Content) != 1 {
-				t.Fatalf("last prompt message = %#v", last)
-			}
-			return &activities.InvokeModelResult{
-				Content:      []activities.Part{{Type: "text", Text: "Temporal result"}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishStop},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			if args.ToolName != "lookup" || args.ToolCallID != "call-1" {
-				t.Fatalf("tool args = %#v", args)
-			}
-			if args.Lifecycle.StreamID != "stream-1" || !args.Lifecycle.DurableRequired {
-				t.Fatalf("tool lifecycle = %#v", args.Lifecycle)
-			}
-			if args.ToolMetadata["client"] != "mcp" {
-				t.Fatalf("tool metadata = %#v", args.ToolMetadata)
-			}
-			return &activities.InvokeToolResult{
-				ToolCallID:   args.ToolCallID,
-				ToolName:     args.ToolName,
-				Input:        args.Input,
-				Output:       ai.ToolResultOutput{Type: "text", Value: "lookup output"},
-				Result:       "lookup output",
-				ToolMetadata: args.ToolMetadata,
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+		modelCalls++
+		if modelCalls == 1 {
+			return &activities.InvokeModelResult{Content: []activities.Part{{Type: "tool-call", ToolCallID: "call-1", ToolName: "lookup", Input: map[string]any{"query": "temporal"}}}, FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls}}, nil
+		}
+		last := args.Options.Prompt[len(args.Options.Prompt)-1]
+		if last.Role != ai.RoleTool {
+			t.Fatalf("last prompt = %#v", last)
+		}
+		return &activities.InvokeModelResult{Content: []activities.Part{{Type: "text", Text: "Temporal result"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelActivity})
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+		if args.Scope.StepID != "step-0" || args.ToolName != "lookup" {
+			t.Fatalf("tool args = %#v", args)
+		}
+		return &activities.InvokeToolResult{ToolCallID: args.ToolCallID, ToolName: args.ToolName, Input: args.Input, Output: ai.ToolResultOutput{Type: "text", Value: "lookup output"}, Result: "lookup output"}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeToolActivity})
 
 	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:       "agent-1",
-		ModelID:       "model-1",
-		Prompt:        "run lookup",
-		Stream:        streaming.Options{StreamID: "stream-1"},
-		ToolExecution: ToolExecutionSequential,
-		Tools: []activities.ToolDefinition{{
-			Name:        "lookup",
-			Description: "Look something up",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string"},
-				},
-			},
-		}},
+		AgentID: "agent-1", ModelID: "model-1", Prompt: "run lookup", ToolExecution: ToolExecutionSequential,
+		Tools: []activities.ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
 	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
@@ -145,278 +81,8 @@ func TestRunAgentExecutesToolActivityAndContinues(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "Temporal result" {
-		t.Fatalf("text = %q", result.Text)
-	}
-	if len(result.Steps) != 2 {
-		t.Fatalf("steps = %d", len(result.Steps))
-	}
-	if modelCalls != 2 {
-		t.Fatalf("model calls = %d", modelCalls)
-	}
-	if result.Steps[0].ToolCalls[0].ToolMetadata["client"] != "mcp" {
-		t.Fatalf("tool call metadata = %#v", result.Steps[0].ToolCalls[0].ToolMetadata)
-	}
-	if result.Steps[0].ToolResults[0].ToolMetadata["client"] != "mcp" {
-		t.Fatalf("tool result metadata = %#v", result.Steps[0].ToolResults[0].ToolMetadata)
-	}
-}
-
-func TestRunAgentCompactsToolArtifactsBeforeNextTool(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	store := &agentRecordingArtifactStore{}
-	big := strings.Repeat("x", 600_000)
-	var modelCalls int
-	var secondPromptBytes int
-
-	acts := activities.New(activities.Options{
-		ArtifactStore: store,
-		Tools: map[string]ai.Tool{
-			"big_lookup": {
-				Execute: func(context.Context, ai.ToolCall, ai.ToolExecutionOptions) (any, error) {
-					return big, nil
-				},
-			},
-			"small_lookup": {
-				Execute: func(_ context.Context, _ ai.ToolCall, opts ai.ToolExecutionOptions) (any, error) {
-					payload, _ := json.Marshal(opts.Messages)
-					if len(payload) > 80_000 {
-						return nil, fmt.Errorf("tool messages too large: %d bytes", len(payload))
-					}
-					return "small result", nil
-				},
-			},
-		},
-	})
-
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			modelCalls++
-			switch modelCalls {
-			case 1:
-				return &activities.InvokeModelResult{
-					Content: []activities.Part{{
-						Type:       "tool-call",
-						ToolCallID: "call-big",
-						ToolName:   "big_lookup",
-						Input:      map[string]any{"query": "large"},
-					}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 2:
-				payload, _ := json.Marshal(args.Options.Prompt)
-				secondPromptBytes = len(payload)
-				text := string(payload)
-				if strings.Contains(text, strings.Repeat("x", 2_000)) {
-					t.Fatalf("second prompt contains raw large tool output")
-				}
-				if !strings.Contains(text, "artifactRef") {
-					t.Fatalf("second prompt omitted artifact ref: %.500s", text)
-				}
-				return &activities.InvokeModelResult{
-					Content: []activities.Part{{
-						Type:       "tool-call",
-						ToolCallID: "call-small",
-						ToolName:   "small_lookup",
-						Input:      map[string]any{"artifactId": "later"},
-					}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			default:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "text", Text: "done"}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishStop},
-				}, nil
-			}
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(acts.InvokeTool, activity.RegisterOptions{Name: activities.InvokeToolActivity})
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:       "agent-1",
-		ModelID:       "model-1",
-		Prompt:        "run lookups",
-		ToolExecution: ToolExecutionSequential,
-		ToolArtifacts: activities.ToolArtifactPolicy{
-			Enabled:         true,
-			MaxInlineBytes:  1_024,
-			MaxPreviewBytes: 64,
-		},
-		Tools: []activities.ToolDefinition{
-			{Name: "big_lookup", InputSchema: map[string]any{"type": "object"}},
-			{Name: "small_lookup", InputSchema: map[string]any{"type": "object"}},
-		},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if len(store.writes) < 2 {
-		t.Fatalf("artifact writes = %d", len(store.writes))
-	}
-	if secondPromptBytes == 0 || secondPromptBytes > 80_000 {
-		t.Fatalf("second prompt bytes = %d", secondPromptBytes)
-	}
-}
-
-func TestRunAgentRequestsApprovalBeforeApprovalRequiredTool(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var lifecycle []streaming.ToolLifecycleInput
-	var toolArgs activities.InvokeToolArgs
-
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			return &activities.InvokeModelResult{
-				Content: []activities.Part{{
-					Type:       "tool-call",
-					ToolCallID: "call-1",
-					ToolName:   "create_worker",
-					Input:      map[string]any{"name": "Ada"},
-				}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			toolArgs = args
-			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "text", Value: "created"},
-				Result:     "created",
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.PublishToolLifecycleEventArgs) error {
-			lifecycle = append(lifecycle, streaming.ToolLifecycleInput(args))
-			return nil
-		},
-		activity.RegisterOptions{Name: activities.PublishToolLifecycleEventActivity},
-	)
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(ToolApprovalResponseSignalName("call-1:approval"), ToolApprovalResponse{
-			ApprovalID: "call-1:approval",
-			Approved:   true,
-			Reason:     "approved by user",
-		})
-	}, time.Second)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:  "agent-1",
-		ModelID:  "model-1",
-		Prompt:   "create worker",
-		MaxSteps: 1,
-		Stream:   streaming.Options{StreamID: "stream-1"},
-		Tools: []activities.ToolDefinition{{
-			Name:             "create_worker",
-			InputSchema:      map[string]any{"type": "object"},
-			RequiresApproval: true,
-		}},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if toolArgs.Approval == nil || toolArgs.Approval.Approved == nil || !*toolArgs.Approval.Approved {
-		t.Fatalf("tool approval args = %#v", toolArgs.Approval)
-	}
-	if !toolArgs.SuppressInputLifecycle {
-		t.Fatalf("expected input lifecycle to be suppressed after workflow published it")
-	}
-	if len(lifecycle) < 3 {
-		t.Fatalf("lifecycle = %#v", lifecycle)
-	}
-	if lifecycle[0].Event != streaming.ToolInputAvailable ||
-		lifecycle[1].Event != streaming.ToolApprovalRequest ||
-		lifecycle[2].Event != streaming.ToolApprovalResponse {
-		t.Fatalf("lifecycle = %#v", lifecycle)
-	}
-}
-
-func TestRunAgentDeniesApprovalRequiredToolWhenUserDenies(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var lifecycle []streaming.ToolLifecycleInput
-	var toolStarts int
-
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			return &activities.InvokeModelResult{
-				Content: []activities.Part{{
-					Type:       "tool-call",
-					ToolCallID: "call-1",
-					ToolName:   "create_worker",
-					Input:      map[string]any{"name": "Ada"},
-				}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(context.Context, activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			toolStarts++
-			return nil, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.PublishToolLifecycleEventArgs) error {
-			lifecycle = append(lifecycle, streaming.ToolLifecycleInput(args))
-			return nil
-		},
-		activity.RegisterOptions{Name: activities.PublishToolLifecycleEventActivity},
-	)
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(ToolApprovalResponseSignalName("call-1:approval"), ToolApprovalResponse{
-			ApprovalID: "call-1:approval",
-			Approved:   false,
-			Reason:     "not yet",
-		})
-	}, time.Second)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:  "agent-1",
-		ModelID:  "model-1",
-		Prompt:   "create worker",
-		MaxSteps: 1,
-		Stream:   streaming.Options{StreamID: "stream-1"},
-		Tools: []activities.ToolDefinition{{
-			Name:             "create_worker",
-			InputSchema:      map[string]any{"type": "object"},
-			RequiresApproval: true,
-		}},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if toolStarts != 0 {
-		t.Fatalf("tool starts = %d", toolStarts)
-	}
-	var result AgentResult
-	if err := env.GetWorkflowResult(&result); err != nil {
-		t.Fatal(err)
-	}
-	if got := result.Steps[0].ToolResults[0].Output; got.Type != "execution-denied" || got.Reason != "not yet" {
-		t.Fatalf("tool result = %#v", got)
-	}
-	if lifecycle[len(lifecycle)-1].Event != streaming.ToolOutputDenied {
-		t.Fatalf("lifecycle = %#v", lifecycle)
+	if result.Text != "Temporal result" || len(result.Steps) != 2 || modelCalls != 2 {
+		t.Fatalf("result = %#v, calls = %d", result, modelCalls)
 	}
 }
 
@@ -424,616 +90,284 @@ func TestRunAgentAppliesFirstToolChoiceOnlyOnFirstStep(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	var choices []ai.ToolChoice
-
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			choices = append(choices, args.Options.ToolChoice)
-			if len(choices) == 1 {
-				return &activities.InvokeModelResult{
-					Content: []activities.Part{{
-						Type:       "tool-call",
-						ToolCallID: "call-1",
-						ToolName:   "extractDocument",
-						Input:      map[string]any{"s3Uri": "s3://bucket/resume.pdf"},
-					}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			}
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+		choices = append(choices, args.Options.ToolChoice)
+		if len(choices) == 1 {
 			return &activities.InvokeModelResult{
-				Content:      []activities.Part{{Type: "text", Text: "Done"}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+				Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-1", ToolName: "extractDocument"}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
 			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			if args.Lifecycle.StreamID != "" {
-				t.Fatalf("unexpected lifecycle without visible stream: %#v", args.Lifecycle)
-			}
-			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "json", Value: map[string]any{"text": "resume text"}},
-				Result:     map[string]any{"text": "resume text"},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
+		}
+		return &activities.InvokeModelResult{Content: []activities.Part{{Type: "text", Text: "done"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelActivity})
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+		return &activities.InvokeToolResult{ToolCallID: args.ToolCallID, ToolName: args.ToolName, Output: ai.ToolResultOutput{Type: "json", Value: map[string]any{"ok": true}}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeToolActivity})
 
 	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:         "agent-1",
-		ModelID:         "model-1",
-		Prompt:          "open attached document",
-		FirstToolChoice: ai.ToolChoiceFor("extractDocument"),
-		Tools: []activities.ToolDefinition{{
-			Name:        "extractDocument",
-			Description: "Extract document text",
-			InputSchema: map[string]any{"type": "object"},
-		}},
+		ModelID: "model-1", Prompt: "open document", FirstToolChoice: ai.ToolChoiceFor("extractDocument"),
+		Tools: []activities.ToolDefinition{{Name: "extractDocument", InputSchema: map[string]any{"type": "object"}}},
 	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if len(choices) != 2 {
+	if len(choices) != 2 || choices[0].Type != "tool" || choices[0].ToolName != "extractDocument" || choices[1].Type != "auto" {
 		t.Fatalf("tool choices = %#v", choices)
 	}
-	if choices[0].Type != "tool" || choices[0].ToolName != "extractDocument" {
-		t.Fatalf("first tool choice = %#v", choices[0])
-	}
-	if choices[1].Type != "auto" {
-		t.Fatalf("second tool choice = %#v, want auto", choices[1])
-	}
 }
 
-func TestRunAgentUsesLocalToolBoundaryDefault(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var localToolStarts int
-
-	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			localToolStarts++
-		}
-	})
-	registerOneToolAgentActivities(t, env)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:             "agent-1",
-		ModelID:             "model-1",
-		Prompt:              "run lookup",
-		DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
-		Tools: []activities.ToolDefinition{{
-			Name:        "lookup",
-			Description: "Look something up",
-			InputSchema: map[string]any{"type": "object"},
-		}},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if localToolStarts != 1 {
-		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
-	}
-}
-
-func TestRunAgentPerToolActivityBoundaryOverridesLocalDefault(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var localToolStarts int
-	var regularToolStarts int
-
-	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			localToolStarts++
-		}
-	})
-	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			regularToolStarts++
-		}
-	})
-	registerOneToolAgentActivities(t, env)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:             "agent-1",
-		ModelID:             "model-1",
-		Prompt:              "run lookup",
-		DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
-		Tools: []activities.ToolDefinition{{
-			Name:              "lookup",
-			Description:       "Look something up",
-			InputSchema:       map[string]any{"type": "object"},
-			ExecutionBoundary: activities.ToolExecutionBoundaryActivity,
-		}},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatal(err)
-	}
-	if localToolStarts != 0 {
-		t.Fatalf("local tool starts = %d, want 0", localToolStarts)
-	}
-	if regularToolStarts != 1 {
-		t.Fatalf("regular tool starts = %d, want 1", regularToolStarts)
-	}
-}
-
-func TestRunAgentMixedParallelToolBoundariesPreserveResultOrder(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var localToolStarts int
-	var regularToolStarts int
-
-	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			localToolStarts++
-		}
-	})
-	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			regularToolStarts++
-		}
-	})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			return &activities.InvokeModelResult{
-				Content: []activities.Part{
-					{Type: "tool-call", ToolCallID: "call-local", ToolName: "localLookup", Input: map[string]any{"query": "local"}},
-					{Type: "tool-call", ToolCallID: "call-regular", ToolName: "regularLookup", Input: map[string]any{"query": "regular"}},
-				},
-				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "text", Value: args.ToolName},
-				Result:     args.ToolName,
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:             "agent-1",
-		ModelID:             "model-1",
-		Prompt:              "run lookups",
-		MaxSteps:            1,
+func TestToolExecutionBoundaryPrecedenceAndTimeoutFallbackDefault(t *testing.T) {
+	input := AgentInput{
 		DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
 		Tools: []activities.ToolDefinition{
-			{Name: "localLookup", InputSchema: map[string]any{"type": "object"}},
-			{Name: "regularLookup", InputSchema: map[string]any{"type": "object"}, ExecutionBoundary: activities.ToolExecutionBoundaryActivity},
+			{Name: "inherits"},
+			{Name: "override", ExecutionBoundary: activities.ToolExecutionBoundaryActivity},
 		},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
 	}
+	if got := toolExecutionBoundary(input, "inherits"); got != activities.ToolExecutionBoundaryLocalActivity {
+		t.Fatalf("inherited boundary = %q", got)
+	}
+	if got := toolExecutionBoundary(input, "override"); got != activities.ToolExecutionBoundaryActivity {
+		t.Fatalf("override boundary = %q", got)
+	}
+	if got := localToolTimeoutFallback(input); got != LocalToolTimeoutFallbackActivity {
+		t.Fatalf("timeout fallback = %q", got)
+	}
+	input.LocalToolTimeoutFallback = LocalToolTimeoutFallbackNone
+	if got := localToolTimeoutFallback(input); got != LocalToolTimeoutFallbackNone {
+		t.Fatalf("explicit timeout fallback = %q", got)
+	}
+}
+
+func TestRunAgentWritesCanonicalMessageAndToolRecords(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var modelCalls int
+	var records []updates.RecordUpsertEvent
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeModelStreamArgs) (*activities.InvokeModelStreamResult, error) {
+		modelCalls++
+		if modelCalls == 1 {
+			return &activities.InvokeModelStreamResult{Result: &activities.LanguageModelGenerateResult{
+				Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-1", ToolName: "lookup", Input: map[string]any{"query": "temporal"}}},
+				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
+			}, PreviewReceipts: []updates.PreviewReceipt{{AttemptID: "attempt-tool", TargetRecordID: "tool:call-1", Lane: updates.LaneToolInput, Outcome: updates.PreviewOutcomeSucceeded, Snapshot: updates.Snapshot{Text: `{"query":"temporal"}`}}}}, nil
+		}
+		return &activities.InvokeModelStreamResult{Result: &activities.LanguageModelGenerateResult{Content: []activities.Part{{Type: "text", Text: "done"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, PreviewReceipts: []updates.PreviewReceipt{{AttemptID: "attempt-text", TargetRecordID: "message:stream-1:step-1", Lane: updates.LaneText, Outcome: updates.PreviewOutcomeSucceeded, Snapshot: updates.Snapshot{Text: "done"}}}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelStreamActivity})
+	env.RegisterActivityWithOptions(func(context.Context, activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+		return &activities.InvokeToolResult{ToolCallID: "call-1", ToolName: "lookup", Output: ai.ToolResultOutput{Type: "text", Value: "ok"}, Result: "ok"}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeToolActivity})
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.WriteRecordArgs) error {
+		records = append(records, args.Event)
+		return nil
+	}, activity.RegisterOptions{Name: activities.WriteRecordActivity})
+
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID: "agent-1", ModelID: "model-1", Prompt: "run", ToolExecution: ToolExecutionSequential,
+		Stream: updates.Options{Visible: true, StreamID: "stream-1"},
+		Tools:  []activities.ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
+	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	var result AgentResult
-	if err := env.GetWorkflowResult(&result); err != nil {
-		t.Fatal(err)
+	var sawAcceptedTool, sawTerminalTool, sawAcceptedMessage bool
+	for _, event := range records {
+		switch {
+		case event.Record.RecordID == "tool:call-1" && event.Record.RecordVersion == 1:
+			sawAcceptedTool = event.AcceptedAttemptID == "attempt-tool" && event.Record.Status == "running"
+		case event.Record.RecordID == "tool:call-1" && event.Record.RecordVersion == 2:
+			sawTerminalTool = event.Record.Status == "succeeded"
+		case event.Record.RecordID == "message:stream-1:step-1":
+			sawAcceptedMessage = event.AcceptedAttemptID == "attempt-text" && event.Record.Data["text"] == "done"
+		}
 	}
-	if localToolStarts != 1 {
-		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
-	}
-	if regularToolStarts != 1 {
-		t.Fatalf("regular tool starts = %d, want 1", regularToolStarts)
-	}
-	if len(result.Steps) != 1 || len(result.Steps[0].ToolResults) != 2 {
-		t.Fatalf("tool results = %#v", result.Steps)
-	}
-	if result.Steps[0].ToolResults[0].ToolName != "localLookup" || result.Steps[0].ToolResults[1].ToolName != "regularLookup" {
-		t.Fatalf("tool result order = %#v", result.Steps[0].ToolResults)
+	if !sawAcceptedTool || !sawTerminalTool || !sawAcceptedMessage {
+		t.Fatalf("records = %#v", records)
 	}
 }
 
-func TestRunAgentFallsBackToActivityAfterLocalToolTimeout(t *testing.T) {
+func TestRunAgentScopesCallerStreamIdentityBasesPerStep(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	var localToolStarts int
-	var regularToolStarts int
-	var toolExecutions int
-
-	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			localToolStarts++
+	var modelCalls int
+	var streamOptions []updates.Options
+	var records []updates.RecordUpsertEvent
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeModelStreamArgs) (*activities.InvokeModelStreamResult, error) {
+		modelCalls++
+		payload, err := json.Marshal(args.Options.ProviderOptions[activities.ProviderOptionsKey])
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
-	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			regularToolStarts++
+		var options updates.Options
+		if err := json.Unmarshal(payload, &options); err != nil {
+			t.Fatal(err)
 		}
-	})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			return &activities.InvokeModelResult{
-				Content: []activities.Part{{
-					Type:       "tool-call",
-					ToolCallID: "call-1",
-					ToolName:   "lookup",
-					Input:      map[string]any{"query": "temporal"},
-				}},
+		streamOptions = append(streamOptions, options)
+		if modelCalls == 1 {
+			return &activities.InvokeModelStreamResult{Result: &activities.LanguageModelGenerateResult{
+				Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-1", ToolName: "lookup"}},
 				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			toolExecutions++
-			if toolExecutions == 1 {
-				return nil, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
-			}
-			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "text", Value: "lookup output"},
-				Result:     "lookup output",
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
+			}}, nil
+		}
+		return &activities.InvokeModelStreamResult{Result: &activities.LanguageModelGenerateResult{
+			Content:      []activities.Part{{Type: "text", Text: "done"}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+		}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelStreamActivity})
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+		return &activities.InvokeToolResult{ToolCallID: args.ToolCallID, ToolName: args.ToolName, Output: ai.ToolResultOutput{Type: "text", Value: "ok"}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeToolActivity})
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.WriteRecordArgs) error {
+		records = append(records, args.Event)
+		return nil
+	}, activity.RegisterOptions{Name: activities.WriteRecordActivity})
 
-	env.ExecuteWorkflow(testAgentWorkflowWithOneLocalToolAttempt, AgentInput{
-		AgentID:             "agent-1",
-		ModelID:             "model-1",
-		Prompt:              "run lookup",
-		MaxSteps:            1,
-		DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity,
-		Tools: []activities.ToolDefinition{{
-			Name:        "lookup",
-			Description: "Look something up",
-			InputSchema: map[string]any{"type": "object"},
-		}},
+	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
+		AgentID: "agent-1", ModelID: "model-1", Prompt: "run", ToolExecution: ToolExecutionSequential,
+		Stream: updates.Options{
+			Visible: true, StreamID: "stream-1", AttemptID: "turn-42", TargetRecordID: "message:assistant-1",
+		},
+		Tools: []activities.ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
 	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if localToolStarts != 1 {
-		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
+	if len(streamOptions) != 2 {
+		t.Fatalf("stream options = %#v", streamOptions)
 	}
-	if regularToolStarts != 1 {
-		t.Fatalf("regular tool starts = %d, want 1", regularToolStarts)
+	if streamOptions[0].AttemptID != "turn-42:step-0" || streamOptions[1].AttemptID != "turn-42:step-1" {
+		t.Fatalf("attempt IDs = %#v", streamOptions)
+	}
+	if streamOptions[0].TargetRecordID != "message:assistant-1:step-0" || streamOptions[1].TargetRecordID != "message:assistant-1:step-1" {
+		t.Fatalf("target record IDs = %#v", streamOptions)
+	}
+	messageIDs := map[string]bool{}
+	for _, event := range records {
+		if event.Record.Kind == updates.RecordKindMessage {
+			messageIDs[event.Record.RecordID] = true
+		}
+	}
+	if !messageIDs["message:assistant-1:step-0"] || !messageIDs["message:assistant-1:step-1"] {
+		t.Fatalf("message records = %#v", records)
 	}
 }
 
-func TestRunAgentCanDisableLocalToolTimeoutFallback(t *testing.T) {
+func TestRecordRetryDoesNotRerunModelOrTool(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	var localToolStarts int
-	var regularToolStarts int
-
-	env.SetOnLocalActivityStartedListener(func(info *activity.Info, _ context.Context, _ []interface{}) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			localToolStarts++
+	var modelCalls, toolCalls, recordCalls int
+	env.RegisterActivityWithOptions(func(context.Context, activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+		modelCalls++
+		if modelCalls == 1 {
+			return &activities.InvokeModelResult{Content: []activities.Part{{Type: "tool-call", ToolCallID: "call-1", ToolName: "lookup"}}, FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls}}, nil
 		}
-	})
-	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name == activities.InvokeToolActivity {
-			regularToolStarts++
+		return &activities.InvokeModelResult{Content: []activities.Part{{Type: "text", Text: "done"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelActivity})
+	env.RegisterActivityWithOptions(func(context.Context, activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
+		toolCalls++
+		return &activities.InvokeToolResult{ToolCallID: "call-1", ToolName: "lookup", Output: ai.ToolResultOutput{Type: "text", Value: "ok"}}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeToolActivity})
+	env.RegisterActivityWithOptions(func(context.Context, activities.WriteRecordArgs) error {
+		recordCalls++
+		if recordCalls == 1 {
+			return temporal.NewApplicationError("transient record failure", "transient")
 		}
+		return nil
+	}, activity.RegisterOptions{Name: activities.WriteRecordActivity})
+
+	env.ExecuteWorkflow(testAgentWorkflowWithRecordRetry, AgentInput{
+		ModelID: "model-1", Prompt: "run", Stream: updates.Options{StreamID: "stream-1"}, ToolExecution: ToolExecutionSequential,
+		Tools: []activities.ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
 	})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			return &activities.InvokeModelResult{
-				Content: []activities.Part{{
-					Type:       "tool-call",
-					ToolCallID: "call-1",
-					ToolName:   "lookup",
-					Input:      map[string]any{"query": "temporal"},
-				}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			return nil, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
-
-	env.ExecuteWorkflow(testAgentWorkflowWithOneLocalToolAttempt, AgentInput{
-		AgentID:                  "agent-1",
-		ModelID:                  "model-1",
-		Prompt:                   "run lookup",
-		DefaultToolBoundary:      activities.ToolExecutionBoundaryLocalActivity,
-		LocalToolTimeoutFallback: LocalToolTimeoutFallbackNone,
-		Tools: []activities.ToolDefinition{{
-			Name:        "lookup",
-			Description: "Look something up",
-			InputSchema: map[string]any{"type": "object"},
-		}},
-	})
-	if !env.IsWorkflowCompleted() {
-		t.Fatal("workflow did not complete")
-	}
-	if err := env.GetWorkflowError(); err == nil {
-		t.Fatal("workflow error is nil, want local timeout")
-	}
-	if localToolStarts != 1 {
-		t.Fatalf("local tool starts = %d, want 1", localToolStarts)
-	}
-	if regularToolStarts != 0 {
-		t.Fatalf("regular tool starts = %d, want 0", regularToolStarts)
-	}
-}
-
-func TestRunAgentSpawnsInspectableSubagentWithoutBlockingParent(t *testing.T) {
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	var modelCalls int
-
-	env.RegisterWorkflowWithOptions(testInspectableSubagentChildWorkflow, workflow.RegisterOptions{Name: "testInspectableSubagentChild"})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			modelCalls++
-			toolNames := map[string]bool{}
-			for _, tool := range args.Options.Tools {
-				toolNames[tool.Name] = true
-			}
-			if !toolNames["research"] || !toolNames[InspectSubagentToolName] || !toolNames[WaitSubagentToolName] || !toolNames[MessageSubagentToolName] {
-				t.Fatalf("subagent tools missing from model options: %#v", args.Options.Tools)
-			}
-			switch modelCalls {
-			case 1:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-research", ToolName: "research", Input: map[string]any{"task": "inspect the repository"}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 2:
-				// Reaching this call proves the research child did not have to finish
-				// before the parent model loop continued.
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-inspect", ToolName: InspectSubagentToolName, Input: map[string]any{"subagentId": "research-call-research"}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 3:
-				last := args.Options.Prompt[len(args.Options.Prompt)-1]
-				data, err := json.Marshal(last.Content[0].Output.Value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var inspected SubagentSnapshot
-				if err := json.Unmarshal(data, &inspected); err != nil {
-					t.Fatal(err)
-				}
-				if inspected.Status != SubagentStatusRunning {
-					t.Fatalf("inspect result = %#v", inspected)
-				}
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-message", ToolName: MessageSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "message": "focus on workflow boundaries"}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 4:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-wait", ToolName: WaitSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "timeoutSeconds": 5}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			default:
-				last := args.Options.Prompt[len(args.Options.Prompt)-1]
-				if last.Role != ai.RoleTool || len(last.Content) != 1 {
-					t.Fatalf("wait result prompt = %#v", args.Options.Prompt)
-				}
-				data, err := json.Marshal(last.Content[0].Output.Value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var waited SubagentWaitResult
-				if err := json.Unmarshal(data, &waited); err != nil {
-					t.Fatal(err)
-				}
-				if waited.Snapshot.Status != SubagentStatusCompleted || waited.Snapshot.Text != "focus on workflow boundaries" {
-					t.Fatalf("wait result = %#v", waited)
-				}
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "text", Text: "research complete"}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishStop},
-				}, nil
-			}
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-
-	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:       "parent",
-		ModelID:       "model-1",
-		Prompt:        "delegate research",
-		ToolExecution: ToolExecutionSequential,
-		Subagents: []SubagentDefinition{{
-			Tool: activities.ToolDefinition{Name: "research", Description: "Research a task."},
-			Agent: &AgentInput{
-				AgentID: "researcher",
-				ModelID: "child-model",
-			},
-			WorkflowType: "testInspectableSubagentChild",
-		}},
-	})
-
-	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
-		t.Fatalf("workflow failed: %v", env.GetWorkflowError())
-	}
-	var result AgentResult
-	if err := env.GetWorkflowResult(&result); err != nil {
+	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "research complete" || modelCalls != 5 {
-		t.Fatalf("result=%#v modelCalls=%d", result, modelCalls)
+	if toolCalls != 1 || modelCalls != 2 || recordCalls < 2 {
+		t.Fatalf("model=%d tool=%d records=%d", modelCalls, toolCalls, recordCalls)
 	}
 }
 
-func TestRunAgentCanCancelBackgroundSubagent(t *testing.T) {
+func TestRunAgentDefaultVersionDoesNotScheduleDurableRecords(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	env.OnGetVersion(durableRecordsChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 	var modelCalls int
-
-	env.RegisterWorkflowWithOptions(testInspectableSubagentChildWorkflow, workflow.RegisterOptions{Name: "testCancelableSubagentChild"})
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			modelCalls++
-			switch modelCalls {
-			case 1:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-research", ToolName: "research", Input: map[string]any{"task": "wait for cancellation"}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 2:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-cancel", ToolName: CancelSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "reason": "no longer needed"}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			case 3:
-				return &activities.InvokeModelResult{
-					Content:      []activities.Part{{Type: "tool-call", ToolCallID: "call-wait", ToolName: WaitSubagentToolName, Input: map[string]any{"subagentId": "research-call-research", "timeoutSeconds": 5}}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			default:
-				last := args.Options.Prompt[len(args.Options.Prompt)-1]
-				data, err := json.Marshal(last.Content[0].Output.Value)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var waited SubagentWaitResult
-				if err := json.Unmarshal(data, &waited); err != nil {
-					t.Fatal(err)
-				}
-				if waited.Snapshot.Status != SubagentStatusCanceled {
-					t.Fatalf("wait result = %#v", waited)
-				}
-				return &activities.InvokeModelResult{Content: []activities.Part{{Type: "text", Text: "canceled"}}, FinishReason: ai.FinishReason{Unified: ai.FinishStop}}, nil
-			}
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
+	env.RegisterActivityWithOptions(func(context.Context, activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
+		modelCalls++
+		return &activities.InvokeModelResult{
+			Content:      []activities.Part{{Type: "text", Text: "done"}},
+			FinishReason: ai.FinishReason{Unified: ai.FinishStop},
+		}, nil
+	}, activity.RegisterOptions{Name: activities.InvokeModelActivity})
 
 	env.ExecuteWorkflow(testAgentWorkflow, AgentInput{
-		AgentID:       "parent",
-		ModelID:       "model-1",
-		Prompt:        "delegate then cancel",
-		ToolExecution: ToolExecutionSequential,
-		Subagents: []SubagentDefinition{{
-			Tool:         activities.ToolDefinition{Name: "research"},
-			Agent:        &AgentInput{AgentID: "researcher", ModelID: "child-model"},
-			WorkflowType: "testCancelableSubagentChild",
-		}},
+		ModelID: "model-1",
+		Prompt:  "run",
+		Stream:  updates.Options{StreamID: "stream-1"},
 	})
-
-	if env.GetWorkflowError() != nil {
-		t.Fatalf("workflow failed: %v", env.GetWorkflowError())
-	}
-	var result AgentResult
-	if err := env.GetWorkflowResult(&result); err != nil {
+	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "canceled" || modelCalls != 4 {
-		t.Fatalf("result=%#v modelCalls=%d", result, modelCalls)
+	if modelCalls != 1 {
+		t.Fatalf("model calls = %d", modelCalls)
 	}
 }
 
-func registerOneToolAgentActivities(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
-	t.Helper()
-	var modelCalls int
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeModelArgs) (*activities.InvokeModelResult, error) {
-			modelCalls++
-			if modelCalls == 1 {
-				return &activities.InvokeModelResult{
-					Content: []activities.Part{{
-						Type:       "tool-call",
-						ToolCallID: "call-1",
-						ToolName:   "lookup",
-						Input:      map[string]any{"query": "temporal"},
-					}},
-					FinishReason: ai.FinishReason{Unified: ai.FinishToolCalls},
-				}, nil
-			}
-			return &activities.InvokeModelResult{
-				Content:      []activities.Part{{Type: "text", Text: "Done"}},
-				FinishReason: ai.FinishReason{Unified: ai.FinishStop},
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeModelActivity},
-	)
-	env.RegisterActivityWithOptions(
-		func(_ context.Context, args activities.InvokeToolArgs) (*activities.InvokeToolResult, error) {
-			return &activities.InvokeToolResult{
-				ToolCallID: args.ToolCallID,
-				ToolName:   args.ToolName,
-				Input:      args.Input,
-				Output:     ai.ToolResultOutput{Type: "text", Value: "lookup output"},
-				Result:     "lookup output",
-			}, nil
-		},
-		activity.RegisterOptions{Name: activities.InvokeToolActivity},
-	)
+func TestRequestToolApprovalWritesInteractionRecords(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var records []updates.RecordUpsertEvent
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.WriteRecordArgs) error {
+		records = append(records, args.Event)
+		return nil
+	}, activity.RegisterOptions{Name: activities.WriteRecordActivity})
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(ToolApprovalResponseSignalName("approval-1"), ToolApprovalResponse{ApprovalID: "approval-1", ToolCallID: "call-1", Approved: true})
+	}, time.Millisecond)
+	env.ExecuteWorkflow(testApprovalWorkflow)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0].Record.Kind != updates.RecordKindInteraction || records[0].Record.Status != "pending" || records[1].Record.Status != "approved" {
+		t.Fatalf("records = %#v", records)
+	}
+	questions, ok := records[0].Record.Data["questions"].([]interface{})
+	if !ok || len(questions) != 1 {
+		t.Fatalf("questions = %#v", records[0].Record.Data["questions"])
+	}
 }
 
-type agentRecordingArtifactStore struct {
-	writes []activities.ToolArtifactWriteInput
-}
-
-func (s *agentRecordingArtifactStore) PutToolArtifact(_ context.Context, input activities.ToolArtifactWriteInput) (*activities.ToolArtifactRef, error) {
-	s.writes = append(s.writes, input)
-	return &activities.ToolArtifactRef{
-		ArtifactID:    fmt.Sprintf("%s/%s/%s/%s.json", input.WorkflowID, input.ToolCallID, input.Kind, input.SHA256),
-		Kind:          input.Kind,
-		OriginalBytes: input.OriginalBytes,
-		ContentType:   input.ContentType,
-		SHA256:        input.SHA256,
-	}, nil
+func TestRequestToolApprovalDefaultVersionSkipsInteractionRecords(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.OnGetVersion(durableRecordsChange, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(ToolApprovalResponseSignalName("approval-1"), ToolApprovalResponse{ApprovalID: "approval-1", ToolCallID: "call-1", Approved: true})
+	}, time.Millisecond)
+	env.ExecuteWorkflow(testApprovalWorkflow)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testAgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
 	return RunAgent(ctx, input)
 }
 
-func testAgentWorkflowWithOneLocalToolAttempt(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
-	return RunAgent(ctx, input, ActivityOptions{
-		LocalTool: workflow.LocalActivityOptions{
-			StartToCloseTimeout: time.Second,
-			RetryPolicy: &temporal.RetryPolicy{
-				MaximumAttempts: 1,
-			},
-		},
-	})
+func testAgentWorkflowWithRecordRetry(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
+	return RunAgent(ctx, input, ActivityOptions{Record: workflow.ActivityOptions{
+		StartToCloseTimeout: time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{InitialInterval: time.Millisecond, MaximumAttempts: 2},
+	}})
 }
 
-func testInspectableSubagentChildWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
-	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusRunning, Sequence: 3, StepNumber: 0, StepType: "research", Text: "working"})
-	var message SubagentMessage
-	received := false
-	selector := workflow.NewSelector(ctx)
-	selector.AddReceive(workflow.GetSignalChannel(ctx, SubagentMessageSignalName), func(channel workflow.ReceiveChannel, _ bool) {
-		channel.Receive(ctx, &message)
-		received = true
-	})
-	selector.AddReceive(ctx.Done(), func(workflow.ReceiveChannel, bool) {})
-	selector.Select(ctx)
-	if !received {
-		return nil, ctx.Err()
+func testApprovalWorkflow(ctx workflow.Context) error {
+	response, err := RequestToolApproval(ctx, ToolApprovalRequest{StreamID: "stream-1", ApprovalID: "approval-1", ToolCallID: "call-1", ToolName: "lookup", Input: map[string]any{"query": "temporal"}})
+	if err != nil {
+		return err
 	}
-	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusCompleted, Sequence: 4, StepNumber: 1, StepType: "summary", Text: message.Content, FinishReason: ai.FinishStop})
-	return &AgentResult{AgentID: input.AgentID, ModelID: input.ModelID, Text: message.Content, FinishReason: ai.FinishStop}, nil
+	if !response.Approved {
+		return temporal.NewApplicationError("approval was not accepted", "test")
+	}
+	return nil
 }

@@ -7,8 +7,7 @@ import (
 	"sort"
 
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
-	"go.temporal.io/sdk/activity"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 func normalizeSchema(schema any) any {
@@ -139,13 +138,8 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 		metadata = tool.ProviderMetadata
 		toolMetadata = mergeProviderMetadata(tool.ToolMetadata, args.ToolMetadata)
 	}
-	if !args.SuppressInputLifecycle {
-		if err := a.publishToolLifecycleInput(ctx, args, dynamic, toolMetadata); err != nil {
-			return nil, err
-		}
-	}
 	if !ok {
-		return a.finishToolLifecycle(ctx, args, toolErrorResult(args, fmt.Errorf("tool %q is not registered", args.ToolName), nil, toolMetadata))
+		return a.finishToolResult(ctx, args, toolErrorResult(args, fmt.Errorf("tool %q is not registered", args.ToolName), nil, toolMetadata))
 	}
 	call := ai.ToolCall{
 		ToolCallID:       args.ToolCallID,
@@ -156,37 +150,37 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 		ProviderMetadata: metadata,
 	}
 	if err := ai.ValidateToolInput(tool, args.Input); err != nil {
-		return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
+		return a.finishToolResult(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
 	}
 	if args.Approval != nil {
 		if args.Approval.Approved == nil || !*args.Approval.Approved {
-			return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, args.Approval.Reason))
+			return a.finishToolResult(ctx, args, deniedToolResult(args, call, args.Approval.Reason))
 		}
 		if tool.NeedsApproval != nil {
 			decision, err := ai.ResolveToolApproval(ctx, map[string]ai.Tool{args.ToolName: tool}, call)
 			if err != nil {
-				return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
+				return a.finishToolResult(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
 			}
 			if decision.Type == ai.ApprovalDecisionDenied {
-				return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, decision.Reason))
+				return a.finishToolResult(ctx, args, deniedToolResult(args, call, decision.Reason))
 			}
 		}
 	} else if tool.RequiresApproval || tool.NeedsApproval != nil {
 		decision, err := ai.ResolveToolApproval(ctx, map[string]ai.Tool{args.ToolName: tool}, call)
 		if err != nil {
-			return a.finishToolLifecycle(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
+			return a.finishToolResult(ctx, args, toolErrorResult(args, err, call.ProviderMetadata, call.ToolMetadata))
 		}
 		if ai.ApprovalBlocksToolExecution(decision) {
-			return a.finishToolLifecycle(ctx, args, deniedToolResult(args, call, decision.Reason))
+			return a.finishToolResult(ctx, args, deniedToolResult(args, call, decision.Reason))
 		}
 	}
 	if tool.Execute == nil {
-		return a.finishToolLifecycle(ctx, args, toolErrorResult(args, fmt.Errorf("tool %q has no execute function", args.ToolName), call.ProviderMetadata, call.ToolMetadata))
+		return a.finishToolResult(ctx, args, toolErrorResult(args, fmt.Errorf("tool %q has no execute function", args.ToolName), call.ProviderMetadata, call.ToolMetadata))
 	}
 	output, err := tool.Execute(ctx, call, ai.ToolExecutionOptions{
 		ToolCallID: args.ToolCallID,
 		Messages:   MessagesToAI(args.Messages),
-		Context:    contextWithScope(args.Context, args.Lifecycle.Scope),
+		Context:    contextWithScope(args.Context, args.Scope),
 		Sandbox:    a.sandbox,
 	})
 	isError := err != nil
@@ -202,7 +196,7 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 		isError = true
 		modelOutput = ai.ToolResultOutput{Type: "error-text", Value: modelErr.Error()}
 	}
-	return a.finishToolLifecycle(ctx, args, &InvokeToolResult{
+	return a.finishToolResult(ctx, args, &InvokeToolResult{
 		ToolCallID:       args.ToolCallID,
 		ToolName:         args.ToolName,
 		Input:            args.Input,
@@ -215,7 +209,7 @@ func (a *Activities) InvokeTool(ctx context.Context, args InvokeToolArgs) (*Invo
 	})
 }
 
-func contextWithScope(contextValue any, scope streaming.Scope) any {
+func contextWithScope(contextValue any, scope updates.Scope) any {
 	if scope.DisplayMode == "" &&
 		scope.AgentID == "" &&
 		scope.TaskID == "" &&
@@ -323,94 +317,10 @@ func (a *Activities) tool(name string) (ai.Tool, bool) {
 	return tool, ok
 }
 
-func (a *Activities) publishToolLifecycleInput(ctx context.Context, args InvokeToolArgs, dynamic bool, toolMetadata ai.ProviderMetadata) error {
-	input, ok := toolLifecycleInput(args, streaming.ToolInputAvailable)
-	if !ok {
-		return nil
-	}
-	input.Input = args.Input
-	input.Dynamic = dynamic
-	input.ToolMetadata = toolMetadata
-	return a.publishToolLifecycle(ctx, args, input)
-}
-
-func (a *Activities) finishToolLifecycle(ctx context.Context, args InvokeToolArgs, result *InvokeToolResult) (*InvokeToolResult, error) {
+func (a *Activities) finishToolResult(ctx context.Context, args InvokeToolArgs, result *InvokeToolResult) (*InvokeToolResult, error) {
 	result, err := compactToolArtifacts(ctx, a.artifacts, args, result)
 	if err != nil {
 		return nil, err
 	}
-	input, ok := toolLifecycleInput(args, toolLifecycleEventForResult(result))
-	if !ok {
-		return result, nil
-	}
-	input.Input = result.Input
-	input.Output = result.Output
-	input.Dynamic = result.Dynamic
-	input.ProviderExecuted = result.ProviderExecuted
-	input.Preliminary = result.Preliminary
-	input.ToolMetadata = result.ToolMetadata
-	if result.IsError {
-		input.ErrorText = toolLifecycleErrorText(result)
-		input.Output = nil
-	}
-	if err := a.publishToolLifecycle(ctx, args, input); err != nil {
-		return nil, err
-	}
 	return result, nil
-}
-
-func (a *Activities) publishToolLifecycle(ctx context.Context, args InvokeToolArgs, input streaming.ToolLifecycleInput) error {
-	return publishLifecycleEvent(ctx, a.connector, args.Lifecycle.DurableRequired, input)
-}
-
-func toolLifecycleInput(args InvokeToolArgs, event streaming.ToolLifecycleEvent) (streaming.ToolLifecycleInput, bool) {
-	if args.Lifecycle.StreamID == "" {
-		return streaming.ToolLifecycleInput{}, false
-	}
-	phase := "terminal"
-	if event == streaming.ToolInputAvailable {
-		phase = "input"
-	}
-	return streaming.ToolLifecycleInput{
-		EventID:    toolLifecycleStableEventID(args.ToolCallID, phase),
-		StreamID:   args.Lifecycle.StreamID,
-		Event:      event,
-		ToolCallID: args.ToolCallID,
-		ToolName:   args.ToolName,
-		Metadata:   args.Lifecycle.Metadata,
-		Scope:      args.Lifecycle.Scope,
-	}, true
-}
-
-func toolLifecycleEventForResult(result *InvokeToolResult) streaming.ToolLifecycleEvent {
-	if result != nil && result.Output.Type == "execution-denied" {
-		return streaming.ToolOutputDenied
-	}
-	if result != nil && result.IsError {
-		return streaming.ToolOutputError
-	}
-	return streaming.ToolOutputAvailable
-}
-
-func toolLifecycleErrorText(result *InvokeToolResult) string {
-	if result == nil {
-		return "tool execution failed"
-	}
-	if text, ok := result.Output.Value.(string); ok && text != "" {
-		return text
-	}
-	if result.Output.Reason != "" {
-		return result.Output.Reason
-	}
-	return "tool execution failed"
-}
-
-func logToolLifecycleLiveError(ctx context.Context, err error) {
-	if err == nil {
-		return
-	}
-	defer func() {
-		_ = recover()
-	}()
-	activity.GetLogger(ctx).Warn("tool lifecycle live publish failed", "error", err)
 }

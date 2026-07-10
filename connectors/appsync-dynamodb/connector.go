@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 type Connector struct {
@@ -44,307 +44,98 @@ func New(options Options) *Connector {
 	return &Connector{options: options, ddb: ddb, signer: signer, http: client}
 }
 
-func (c *Connector) StartAttempt(ctx context.Context, ref streaming.AttemptRef) error {
-	return c.upsertAttempt(ctx, ref, attemptUpdate{Status: streaming.AttemptActive, Sequence: 0})
-}
-
-func (c *Connector) PublishLiveChunk(ctx context.Context, chunk streaming.LiveChunk) error {
-	if c == nil {
-		return nil
-	}
-	if err := c.publishLive(ctx, chunk.StreamID, llmStreamChunk(chunk.Event, chunk)); err != nil {
+func (c *Connector) BeginPreview(ctx context.Context, event updates.PreviewBeginEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
 		return err
 	}
-	if c.options.PersistEphemeralChunks {
-		return c.PersistEphemeralChunk(ctx, chunk)
+	if err := c.putPreviewEvent(ctx, event.StreamID, previewManifestFromBegin(event)); err != nil {
+		return err
 	}
-	return nil
+	return c.PublishUpdate(ctx, event)
 }
 
-func (c *Connector) PersistEphemeralChunk(ctx context.Context, chunk streaming.EphemeralChunk) error {
-	ref, err := c.resolve(ctx, chunk.StreamID)
+func (c *Connector) CheckpointPreview(ctx context.Context, event updates.PreviewSnapshotEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
+		return err
+	}
+	if err := c.putPreviewEvent(ctx, event.StreamID, previewManifestFromSnapshot(event)); err != nil {
+		return err
+	}
+	return c.PublishUpdate(ctx, event)
+}
+
+func (c *Connector) EndPreview(ctx context.Context, event updates.PreviewEndEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
+		return err
+	}
+	if err := c.putPreviewEvent(ctx, event.StreamID, previewManifestFromEnd(event)); err != nil {
+		return err
+	}
+	return c.PublishUpdate(ctx, event)
+}
+
+func (c *Connector) UpsertRecord(ctx context.Context, event updates.RecordUpsertEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
+		return err
+	}
+	if err := c.validateAcceptedPreviewTarget(ctx, event); err != nil {
+		return err
+	}
+	current, err := c.putCurrentRecord(ctx, event)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	item := c.baseItem(ref, "ephemeral#"+attemptStorageKey(chunk.AttemptRef)+"#"+fmt.Sprint(chunk.Sequence), now)
-	item["entityType"] = c.options.ephemeralEntityType()
-	item["streamId"] = chunk.StreamID
-	item["lane"] = chunk.Lane
-	item["attemptId"] = chunk.AttemptID
-	item["partId"] = chunk.PartID
-	item["toolCallId"] = chunk.ToolCallID
-	item["toolName"] = chunk.ToolName
-	item["sequence"] = chunk.Sequence
-	item["ephemeralAttemptId"] = attemptStorageKey(chunk.AttemptRef)
-	item["ephemeralSequence"] = chunk.Sequence
-	item["chunk"] = llmStreamChunk(chunk.Event, chunk)
-	item["expiresAt"] = now.Add(c.options.ttl()).Unix()
-	return c.putItem(ctx, item, "attribute_not_exists(#pk)")
-}
-
-func (c *Connector) UpdateAttemptSnapshot(ctx context.Context, snapshot streaming.AttemptSnapshot) error {
-	return c.upsertAttempt(ctx, snapshot.AttemptRef, attemptUpdate{
-		Status:         streaming.AttemptActive,
-		Sequence:       snapshot.Sequence,
-		SnapshotText:   snapshot.SnapshotText,
-		SnapshotObject: snapshot.SnapshotObject,
-	})
-}
-
-func (c *Connector) CompleteAttempt(ctx context.Context, completion streaming.AttemptCompletion) error {
-	if err := c.upsertAttempt(ctx, completion.AttemptRef, attemptUpdate{
-		Status:         completion.Status,
-		Sequence:       completion.Sequence,
-		SnapshotText:   completion.SnapshotText,
-		SnapshotObject: completion.SnapshotObject,
-		Reason:         completion.Reason,
-	}); err != nil {
-		return err
-	}
-	event := streaming.EventAttemptDiscard
-	if completion.Status == streaming.AttemptCommitted {
-		event = streaming.EventAttemptCommit
-	} else if completion.Status == streaming.AttemptCanceled {
-		event = streaming.EventAttemptCancel
-	} else if completion.Status == streaming.AttemptFailed {
-		event = streaming.EventAttemptFail
-	}
-	return c.publishChunk(ctx, completion.StreamID, llmStreamChunk(event, completion))
-}
-
-func (c *Connector) PublishToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
-	if input.EventID == "" {
-		input.EventID = newEventID()
-	}
-	if err := c.PersistToolLifecycleEvent(ctx, input); err != nil {
-		return err
-	}
-	return c.PublishLiveToolLifecycleEvent(ctx, input)
-}
-
-func (c *Connector) PersistToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
-	if input.StreamID == "" {
+	if !current {
 		return nil
 	}
-	return c.persistEvent(ctx, input.StreamID, toolLifecycleEventID(input), toolLifecycleChunk(input))
-}
-
-func (c *Connector) PublishLiveToolLifecycleEvent(ctx context.Context, input streaming.ToolLifecycleInput) error {
-	if input.StreamID == "" {
-		return nil
-	}
-	return c.publishLiveEvent(ctx, input.StreamID, toolLifecycleEventID(input), toolLifecycleChunk(input))
-}
-
-type attemptUpdate struct {
-	Status         streaming.AttemptStatus
-	Sequence       int
-	SnapshotText   string
-	SnapshotObject any
-	Reason         string
-}
-
-func (c *Connector) upsertAttempt(ctx context.Context, attempt streaming.AttemptRef, update attemptUpdate) error {
-	ref, err := c.resolve(ctx, attempt.StreamID)
+	stored, err := c.persistDurableEvent(ctx, event)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	key := map[string]any{
-		c.options.partitionKeyName(): "attempt#" + attemptStorageKey(attempt),
-		c.options.sortKeyName():      c.options.AttemptSortKey,
-	}
-	values := c.cleanMap(map[string]any{
-		":entityType":       c.options.attemptEntityType(),
-		":streamId":         attempt.StreamID,
-		":phase":            attempt.Phase,
-		":lane":             attempt.Lane,
-		":attemptId":        attempt.AttemptID,
-		":partId":           attempt.PartID,
-		":toolCallId":       attempt.ToolCallID,
-		":toolName":         attempt.ToolName,
-		":displayMode":      string(attempt.DisplayMode),
-		":agentId":          attempt.AgentID,
-		":taskId":           attempt.TaskID,
-		":taskTitle":        attempt.TaskTitle,
-		":skillName":        attempt.SkillName,
-		":stepId":           attempt.StepID,
-		":stepNumber":       attempt.StepNumber,
-		":stepType":         attempt.StepType,
-		":status":           update.Status,
-		":updatedAt":        now.UnixMilli(),
-		":attemptStreamId":  attempt.StreamID,
-		":attemptUpdatedAt": now.UnixMilli(),
-		":snapshotSequence": update.Sequence,
-		":snapshotText":     update.SnapshotText,
-		":snapshotObject":   update.SnapshotObject,
-		":discardReason":    update.Reason,
-		":completedAt":      completedAt(update.Status, now),
-		":expiresAt":        now.Add(c.options.ttl()).Unix(),
-		":activeStatus":     streaming.AttemptActive,
-	})
-	for k, v := range ref.ReplayAttributes {
-		values[":"+k] = v
-	}
-	sets := []string{
-		"entityType = :entityType",
-		"streamId = :streamId",
-		"phase = :phase",
-		"lane = :lane",
-		"attemptId = :attemptId",
-		"#status = :status",
-		"updatedAt = :updatedAt",
-		"attemptStreamId = :attemptStreamId",
-		"attemptUpdatedAt = :attemptUpdatedAt",
-		"snapshotSequence = :snapshotSequence",
-		"expiresAt = :expiresAt",
-	}
-	for key := range ref.ReplayAttributes {
-		if reservedAttemptField(key) {
-			continue
+	if event.AcceptedAttemptID != "" {
+		if err := c.markPreviewAccepted(ctx, event.StreamID, event.AcceptedAttemptID); err != nil {
+			return err
 		}
-		sets = append(sets, key+" = :"+key)
 	}
-	if values[":partId"] != nil {
-		sets = append(sets, "partId = :partId")
+	return c.PublishUpdate(ctx, stored)
+}
+
+func (c *Connector) EndStream(ctx context.Context, event updates.StreamEndEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
+		return err
 	}
-	if values[":toolCallId"] != nil {
-		sets = append(sets, "toolCallId = :toolCallId")
-	}
-	if values[":toolName"] != nil {
-		sets = append(sets, "toolName = :toolName")
-	}
-	if values[":displayMode"] != nil {
-		sets = append(sets, "displayMode = :displayMode")
-	}
-	if values[":agentId"] != nil {
-		sets = append(sets, "agentId = :agentId")
-	}
-	if values[":taskId"] != nil {
-		sets = append(sets, "taskId = :taskId")
-	}
-	if values[":taskTitle"] != nil {
-		sets = append(sets, "taskTitle = :taskTitle")
-	}
-	if values[":skillName"] != nil {
-		sets = append(sets, "skillName = :skillName")
-	}
-	if values[":stepId"] != nil {
-		sets = append(sets, "stepId = :stepId")
-	}
-	if values[":stepNumber"] != nil {
-		sets = append(sets, "stepNumber = :stepNumber")
-	}
-	if values[":stepType"] != nil {
-		sets = append(sets, "stepType = :stepType")
-	}
-	if values[":snapshotText"] != nil {
-		sets = append(sets, "snapshotText = :snapshotText")
-	}
-	if values[":snapshotObject"] != nil {
-		sets = append(sets, "snapshotObject = :snapshotObject")
-	}
-	if values[":discardReason"] != nil {
-		sets = append(sets, "discardReason = :discardReason")
-	}
-	if values[":completedAt"] != nil {
-		sets = append(sets, "completedAt = :completedAt")
-	}
-	avKey, err := marshalMap(key)
+	stored, err := c.persistDurableEvent(ctx, event)
 	if err != nil {
 		return err
 	}
-	avValues, err := marshalMap(values)
-	if err != nil {
+	if err := c.putTerminal(ctx, stored); err != nil {
 		return err
 	}
-	condition := "(attribute_not_exists(snapshotSequence) OR snapshotSequence <= :snapshotSequence) AND (attribute_not_exists(#status) OR #status = :activeStatus OR :status <> :activeStatus)"
-	_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                 aws.String(c.options.TableName),
-		Key:                       avKey,
-		UpdateExpression:          aws.String("SET " + strings.Join(sets, ", ")),
-		ExpressionAttributeNames:  map[string]string{"#status": "status"},
-		ExpressionAttributeValues: avValues,
-		ConditionExpression:       aws.String(condition),
-	})
-	var conditional *types.ConditionalCheckFailedException
-	if errors.As(err, &conditional) {
-		return nil
-	}
-	return err
+	return c.PublishUpdate(ctx, stored)
 }
 
-func reservedAttemptField(key string) bool {
-	switch key {
-	case "entityType", "streamId", "phase", "lane", "attemptId", "partId", "toolCallId", "toolName", "displayMode", "agentId", "taskId", "taskTitle", "skillName", "stepId", "stepNumber", "stepType", "status", "updatedAt", "attemptStreamId", "attemptUpdatedAt", "snapshotSequence", "snapshotText", "snapshotObject", "discardReason", "completedAt", "expiresAt":
-		return true
-	default:
-		return false
-	}
-}
-
-func completedAt(status streaming.AttemptStatus, now time.Time) any {
-	if status == streaming.AttemptActive {
-		return nil
-	}
-	return now.UnixMilli()
-}
-
-func (c *Connector) publishChunk(ctx context.Context, streamID string, chunk any) error {
-	eventID := newEventID()
-	if err := c.persistEvent(ctx, streamID, eventID, chunk); err != nil {
+// PublishUpdate publishes only the common v2 update envelope. Durable methods
+// persist their state before calling it; preview chunks call it directly.
+func (c *Connector) PublishUpdate(ctx context.Context, event updates.UpdateEvent) error {
+	if err := updates.ValidateEvent(event); err != nil {
 		return err
 	}
-	return c.publishLiveEvent(ctx, streamID, eventID, chunk)
-}
-
-func (c *Connector) publishLive(ctx context.Context, streamID string, chunk any) error {
-	return c.publishLiveEvent(ctx, streamID, newEventID(), chunk)
-}
-
-func (c *Connector) persistEvent(ctx context.Context, streamID string, eventID string, chunk any) error {
-	ref, err := c.resolve(ctx, streamID)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	item := c.baseItem(ref, "event#"+streamID+"#"+eventID, now)
-	item["entityType"] = c.options.eventEntityType()
-	item["streamId"] = streamID
-	item["eventId"] = eventID
-	item["durableStreamId"] = streamID
-	item["durableEventId"] = eventID
-	item["chunk"] = chunk
-	item["expiresAt"] = now.Add(c.options.ttl()).Unix()
-	err = c.putItem(ctx, item, "attribute_not_exists(#pk)")
-	var conditional *types.ConditionalCheckFailedException
-	if errors.As(err, &conditional) {
-		return nil
-	}
-	return err
-}
-
-func (c *Connector) publishLiveEvent(ctx context.Context, streamID string, eventID string, chunk any) error {
 	if c == nil || c.options.Disabled || c.options.AppSyncHTTPDomain == "" {
 		return nil
 	}
-	ref, err := c.resolve(ctx, streamID)
+	base := event.EventBase()
+	ref, err := c.resolve(ctx, base.StreamID)
 	if err != nil {
 		return err
 	}
-	channel := ref.Channel
-	if channel == "" {
-		return fmt.Errorf("stream %q resolved without a channel", streamID)
+	if ref.Channel == "" {
+		return fmt.Errorf("stream %q resolved without a channel", base.StreamID)
 	}
-	eventBytes, err := json.Marshal(map[string]any{"eventId": eventID, "chunk": chunk})
+	eventBytes, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{
-		"channel": channel,
-		"events":  []string{string(eventBytes)},
-	})
+	body, err := json.Marshal(map[string]any{"channel": ref.Channel, "events": []string{string(eventBytes)}})
 	if err != nil {
 		return err
 	}
@@ -360,51 +151,370 @@ func (c *Connector) publishLiveEvent(ctx context.Context, streamID string, event
 		return fmt.Errorf("retrieving AWS credentials: %w", err)
 	}
 	sum := sha256.Sum256(body)
-	hash := hex.EncodeToString(sum[:])
-	if err := c.signer.SignHTTP(ctx, creds, req, hash, "appsync", c.options.AWSConfig.Region, time.Now()); err != nil {
+	if err := c.signer.SignHTTP(ctx, creds, req, hex.EncodeToString(sum[:]), "appsync", c.options.AWSConfig.Region, time.Now()); err != nil {
 		return fmt.Errorf("signing AppSync event publish: %w", err)
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("publishing AppSync event: %w", err)
 	}
-	defer func() {
-		_ = res.Body.Close()
-	}()
+	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		return fmt.Errorf("publishing AppSync event: status %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+		responseBody, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return fmt.Errorf("publishing AppSync event: status %d: %s", res.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
 	return nil
 }
 
-func (c *Connector) baseItem(ref StreamRef, id string, now time.Time) map[string]any {
-	item := map[string]any{
-		c.options.partitionKeyName(): id,
-		c.options.sortKeyName():      now.UnixMilli(),
-		"createdAt":                  now.UnixMilli(),
-		"updatedAt":                  now.UnixMilli(),
+type storedPreview struct {
+	Manifest updates.PreviewManifest
+	Status   string
+}
+
+func previewManifestFromBegin(event updates.PreviewBeginEvent) storedPreview {
+	return storedPreview{Manifest: updates.PreviewManifest{AttemptID: event.AttemptID, TargetRecordID: event.TargetRecordID, Lane: event.Lane, Status: updates.PreviewStatusActive, Sequence: event.Sequence, Scope: event.Scope, UpdatedAt: event.OccurredAt}, Status: string(updates.PreviewStatusActive)}
+}
+
+func previewManifestFromSnapshot(event updates.PreviewSnapshotEvent) storedPreview {
+	return storedPreview{Manifest: updates.PreviewManifest{AttemptID: event.AttemptID, TargetRecordID: event.TargetRecordID, Lane: event.Lane, Status: updates.PreviewStatusActive, Sequence: event.Sequence, Snapshot: event.Snapshot, Scope: event.Scope, UpdatedAt: event.OccurredAt}, Status: string(updates.PreviewStatusActive)}
+}
+
+func previewManifestFromEnd(event updates.PreviewEndEvent) storedPreview {
+	status := string(event.Outcome)
+	manifestStatus := updates.PreviewStatusActive
+	if event.Outcome == updates.PreviewOutcomeSucceeded {
+		manifestStatus = updates.PreviewStatusSucceeded
 	}
-	for key, value := range ref.ReplayAttributes {
-		item[key] = value
+	manifest := updates.PreviewManifest{AttemptID: event.AttemptID, TargetRecordID: event.TargetRecordID, Lane: event.Lane, Status: manifestStatus, Sequence: event.Sequence, Scope: event.Scope, UpdatedAt: event.OccurredAt}
+	if event.Snapshot != nil {
+		manifest.Snapshot = *event.Snapshot
+	}
+	return storedPreview{Manifest: manifest, Status: status}
+}
+
+func (c *Connector) putPreviewEvent(ctx context.Context, streamID string, preview storedPreview) error {
+	ref, err := c.resolve(ctx, streamID)
+	if err != nil {
+		return err
+	}
+	key := c.stableKey("preview#"+streamID+"#"+preview.Manifest.AttemptID, c.options.stateSortKey())
+	existing, err := c.getItem(ctx, key)
+	if err != nil {
+		return err
+	}
+	if target := stringField(existing, "targetRecordId"); target != "" && target != preview.Manifest.TargetRecordID {
+		return fmt.Errorf("%w: preview %s changed targetRecordId from %s to %s", updates.ErrEventConflict, preview.Manifest.AttemptID, target, preview.Manifest.TargetRecordID)
+	}
+	if lane := stringField(existing, "lane"); lane != "" && lane != string(preview.Manifest.Lane) {
+		return fmt.Errorf("%w: preview %s changed lane from %s to %s", updates.ErrEventConflict, preview.Manifest.AttemptID, lane, preview.Manifest.Lane)
+	}
+	if sequence, ok := intField(existing, "sequence"); ok && sequence > preview.Manifest.Sequence {
+		return nil
+	}
+	if status := stringField(existing, "status"); status == "accepted" || status == string(updates.PreviewOutcomeFailed) || status == string(updates.PreviewOutcomeCanceled) {
+		return nil
+	}
+	item := c.baseItem(ref, key, preview.Manifest.UpdatedAt)
+	item["entityType"] = c.options.previewEntityType()
+	item["protocolVersion"] = updates.ProtocolVersion
+	item["streamId"] = streamID
+	item["attemptId"] = preview.Manifest.AttemptID
+	item["targetRecordId"] = preview.Manifest.TargetRecordID
+	item["lane"] = preview.Manifest.Lane
+	item["status"] = preview.Status
+	item["sequence"] = preview.Manifest.Sequence
+	item["snapshot"] = preview.Manifest.Snapshot
+	item["scope"] = preview.Manifest.Scope
+	item["preview"] = preview.Manifest
+	item[c.options.previewStreamKeyName()] = streamID
+	item[c.options.previewUpdatedAtKeyName()] = preview.Manifest.UpdatedAt
+	item["expiresAt"] = time.Now().Add(c.options.ttl()).Unix()
+	av, err := marshalMap(cleanMap(item))
+	if err != nil {
+		return err
+	}
+	values, err := marshalMap(map[string]any{":sequence": preview.Manifest.Sequence, ":status": preview.Status, ":active": string(updates.PreviewStatusActive)})
+	if err != nil {
+		return err
+	}
+	_, err = c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(c.options.TableName), Item: av,
+		ConditionExpression:      aws.String("attribute_not_exists(#sequence) OR (#sequence < :sequence AND #status = :active) OR (#sequence = :sequence AND #status = :status)"),
+		ExpressionAttributeNames: map[string]string{"#sequence": "sequence", "#status": "status"}, ExpressionAttributeValues: values,
+	})
+	var conditional *types.ConditionalCheckFailedException
+	if errors.As(err, &conditional) {
+		return nil
+	}
+	return err
+}
+
+func (c *Connector) markPreviewAccepted(ctx context.Context, streamID, attemptID string) error {
+	key := c.stableKey("preview#"+streamID+"#"+attemptID, c.options.stateSortKey())
+	values, err := marshalMap(map[string]any{":status": "accepted", ":updatedAt": time.Now().UnixMilli(), ":expiresAt": time.Now().Add(c.options.ttl()).Unix()})
+	if err != nil {
+		return err
+	}
+	_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(c.options.TableName), Key: key, UpdateExpression: aws.String("SET #status = :status, updatedAt = :updatedAt, expiresAt = :expiresAt"), ExpressionAttributeValues: values, ConditionExpression: aws.String("attribute_exists(#pk)"), ExpressionAttributeNames: map[string]string{"#pk": c.options.partitionKeyName(), "#status": "status"}})
+	var conditional *types.ConditionalCheckFailedException
+	if errors.As(err, &conditional) {
+		return nil
+	}
+	return err
+}
+
+func (c *Connector) validateAcceptedPreviewTarget(ctx context.Context, event updates.RecordUpsertEvent) error {
+	if event.AcceptedAttemptID == "" {
+		return nil
+	}
+	key := c.stableKey("preview#"+event.StreamID+"#"+event.AcceptedAttemptID, c.options.stateSortKey())
+	existing, err := c.getItem(ctx, key)
+	if err != nil || len(existing) == 0 {
+		return err
+	}
+	if target := stringField(existing, "targetRecordId"); target != "" && target != event.Record.RecordID {
+		return fmt.Errorf("%w: accepted attempt %s targets %s, not %s", updates.ErrRecordConflict, event.AcceptedAttemptID, target, event.Record.RecordID)
+	}
+	return nil
+}
+
+// putCurrentRecord reports whether event is current and should continue to the
+// durable-event/publish stages. Stale versions are successful no-ops.
+func (c *Connector) putCurrentRecord(ctx context.Context, event updates.RecordUpsertEvent) (bool, error) {
+	ref, err := c.resolve(ctx, event.StreamID)
+	if err != nil {
+		return false, err
+	}
+	key := c.stableKey("record#"+event.StreamID+"#"+event.Record.RecordID, c.options.stateSortKey())
+	existing, err := c.getItem(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	payloadHash := appSyncRecordHash(event.Record, event.AcceptedAttemptID)
+	if currentVersion, ok := intField(existing, "recordVersion"); ok {
+		if currentVersion > event.Record.RecordVersion {
+			return false, nil
+		}
+		if currentVersion == event.Record.RecordVersion {
+			if stringField(existing, "eventId") == event.EventID && stringField(existing, "payloadHash") == payloadHash {
+				return true, nil
+			}
+			return false, fmt.Errorf("%w: %s version %d", updates.ErrRecordConflict, event.Record.RecordID, event.Record.RecordVersion)
+		}
+	}
+	item := c.baseItem(ref, key, event.Record.UpdatedAt)
+	item["entityType"] = c.options.recordEntityType()
+	item["protocolVersion"] = updates.ProtocolVersion
+	item["streamId"] = event.StreamID
+	item["recordId"] = event.Record.RecordID
+	item["recordVersion"] = event.Record.RecordVersion
+	item["eventId"] = event.EventID
+	item["payloadHash"] = payloadHash
+	item["record"] = event.Record
+	item[c.options.recordStreamKeyName()] = event.StreamID
+	item[c.options.recordUpdatedAtKeyName()] = event.Record.UpdatedAt
+	av, err := marshalMap(cleanMap(item))
+	if err != nil {
+		return false, err
+	}
+	values, err := marshalMap(map[string]any{":version": event.Record.RecordVersion, ":eventId": event.EventID, ":payloadHash": payloadHash})
+	if err != nil {
+		return false, err
+	}
+	_, err = c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(c.options.TableName), Item: av,
+		ConditionExpression:      aws.String("attribute_not_exists(#version) OR #version < :version OR (#version = :version AND #eventId = :eventId AND #payloadHash = :payloadHash)"),
+		ExpressionAttributeNames: map[string]string{"#version": "recordVersion", "#eventId": "eventId", "#payloadHash": "payloadHash"}, ExpressionAttributeValues: values,
+	})
+	var conditional *types.ConditionalCheckFailedException
+	if !errors.As(err, &conditional) {
+		return err == nil, err
+	}
+	latest, getErr := c.getItem(ctx, key)
+	if getErr != nil {
+		return false, getErr
+	}
+	latestVersion, _ := intField(latest, "recordVersion")
+	if latestVersion > event.Record.RecordVersion {
+		return false, nil
+	}
+	if latestVersion == event.Record.RecordVersion && stringField(latest, "eventId") == event.EventID && stringField(latest, "payloadHash") == payloadHash {
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: %s version %d", updates.ErrRecordConflict, event.Record.RecordID, event.Record.RecordVersion)
+}
+
+func (c *Connector) persistDurableEvent(ctx context.Context, event updates.UpdateEvent) (updates.UpdateEvent, error) {
+	base := event.EventBase()
+	eventHash := appSyncEventHash(event)
+	ref, err := c.resolve(ctx, base.StreamID)
+	if err != nil {
+		return nil, err
+	}
+	key := c.stableKey("event#"+base.StreamID+"#"+base.EventID, c.options.stateSortKey())
+	existing, err := c.getItem(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if cursor := stringField(existing, "cursor"); cursor != "" {
+		if storedHash := appSyncStoredEventHash(existing); storedHash == "" || storedHash != eventHash {
+			return nil, fmt.Errorf("%w: %s", updates.ErrEventConflict, base.EventID)
+		}
+		return eventWithCursor(event, cursor), nil
+	}
+	cursor := newEventID()
+	stored := eventWithCursor(event, cursor)
+	item := c.baseItem(ref, key, base.OccurredAt)
+	item["entityType"] = c.options.eventEntityType()
+	item["protocolVersion"] = updates.ProtocolVersion
+	item["streamId"] = base.StreamID
+	item["eventId"] = base.EventID
+	item["eventHash"] = eventHash
+	item["cursor"] = cursor
+	item["event"] = stored
+	item["updateEvent"] = stored
+	item[c.options.eventStreamKeyName()] = base.StreamID
+	item[c.options.eventCursorKeyName()] = cursor
+	item["expiresAt"] = time.Now().Add(c.options.ttl()).Unix()
+	if err := c.putItem(ctx, item, "attribute_not_exists(#pk)"); err != nil {
+		var conditional *types.ConditionalCheckFailedException
+		if !errors.As(err, &conditional) {
+			return nil, err
+		}
+		existing, getErr := c.getItem(ctx, key)
+		if getErr != nil {
+			return nil, getErr
+		}
+		cursor = stringField(existing, "cursor")
+		if cursor == "" {
+			return nil, fmt.Errorf("durable event %q exists without cursor", base.EventID)
+		}
+		if storedHash := appSyncStoredEventHash(existing); storedHash == "" || storedHash != eventHash {
+			return nil, fmt.Errorf("%w: %s", updates.ErrEventConflict, base.EventID)
+		}
+		stored = eventWithCursor(event, cursor)
+	}
+	return stored, nil
+}
+
+func (c *Connector) putTerminal(ctx context.Context, event updates.UpdateEvent) error {
+	terminal, ok := event.(updates.StreamEndEvent)
+	if !ok {
+		if pointer, pointerOK := event.(*updates.StreamEndEvent); pointerOK {
+			terminal = *pointer
+		} else {
+			return fmt.Errorf("invalid terminal event %T", event)
+		}
+	}
+	ref, err := c.resolve(ctx, terminal.StreamID)
+	if err != nil {
+		return err
+	}
+	key := c.stableKey("terminal#"+terminal.StreamID, c.options.stateSortKey())
+	item := c.baseItem(ref, key, terminal.OccurredAt)
+	item["entityType"] = c.options.terminalEntityType()
+	item["protocolVersion"] = updates.ProtocolVersion
+	item["streamId"] = terminal.StreamID
+	item["terminal"] = terminal
+	return c.putItem(ctx, item, "")
+}
+
+func eventWithCursor(event updates.UpdateEvent, cursor string) updates.UpdateEvent {
+	switch value := event.(type) {
+	case updates.RecordUpsertEvent:
+		value.Cursor = cursor
+		return value
+	case *updates.RecordUpsertEvent:
+		copy := *value
+		copy.Cursor = cursor
+		return copy
+	case updates.StreamEndEvent:
+		value.Cursor = cursor
+		return value
+	case *updates.StreamEndEvent:
+		copy := *value
+		copy.Cursor = cursor
+		return copy
+	default:
+		return event
+	}
+}
+
+func appSyncRecordHash(record updates.WorkflowRecord, acceptedAttemptID string) string {
+	payload, _ := json.Marshal(struct {
+		AcceptedAttemptID string                 `json:"acceptedAttemptId,omitempty"`
+		Record            updates.WorkflowRecord `json:"record"`
+	}{AcceptedAttemptID: acceptedAttemptID, Record: record})
+	return appSyncPayloadHash(payload)
+}
+
+func appSyncEventHash(event updates.UpdateEvent) string {
+	payload, _ := json.Marshal(eventWithCursor(event, ""))
+	return appSyncPayloadHash(payload)
+}
+
+func appSyncStoredEventHash(item map[string]any) string {
+	if hash := stringField(item, "eventHash"); hash != "" {
+		return hash
+	}
+	raw, ok := item["event"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	copy := make(map[string]any, len(raw))
+	for key, value := range raw {
+		copy[key] = value
+	}
+	delete(copy, "cursor")
+	payload, _ := json.Marshal(copy)
+	return appSyncPayloadHash(payload)
+}
+
+func appSyncPayloadHash(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func (c *Connector) stableKey(id string, sort int64) map[string]types.AttributeValue {
+	key, _ := marshalMap(map[string]any{c.options.partitionKeyName(): id, c.options.sortKeyName(): sort})
+	return key
+}
+
+func (c *Connector) getItem(ctx context.Context, key map[string]types.AttributeValue) (map[string]any, error) {
+	output, err := c.ddb.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(c.options.TableName), Key: key, ConsistentRead: aws.Bool(true)})
+	if err != nil || len(output.Item) == 0 {
+		return nil, err
+	}
+	var item map[string]any
+	if err := attributevalue.UnmarshalMap(output.Item, &item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (c *Connector) baseItem(ref StreamRef, key map[string]types.AttributeValue, updatedAt int64) map[string]any {
+	item := map[string]any{"createdAt": updatedAt, "updatedAt": updatedAt}
+	for name, value := range key {
+		var decoded any
+		if err := attributevalue.Unmarshal(value, &decoded); err == nil {
+			item[name] = decoded
+		}
+	}
+	for name, value := range ref.ReplayAttributes {
+		item[name] = value
 	}
 	return item
 }
 
 func (c *Connector) putItem(ctx context.Context, item map[string]any, condition string) error {
-	av, err := marshalMap(c.cleanMap(item))
+	av, err := marshalMap(cleanMap(item))
 	if err != nil {
 		return err
 	}
-	input := &dynamodb.PutItemInput{
-		TableName: aws.String(c.options.TableName),
-		Item:      av,
-		ExpressionAttributeNames: map[string]string{
-			"#pk": c.options.partitionKeyName(),
-		},
-	}
+	input := &dynamodb.PutItemInput{TableName: aws.String(c.options.TableName), Item: av}
 	if condition != "" {
 		input.ConditionExpression = aws.String(condition)
+		input.ExpressionAttributeNames = map[string]string{"#pk": c.options.partitionKeyName()}
 	}
 	_, err = c.ddb.PutItem(ctx, input)
 	return err
@@ -417,16 +527,10 @@ func (c *Connector) resolve(ctx context.Context, streamID string) (StreamRef, er
 	if c.options.Resolver != nil {
 		return c.options.Resolver.ResolveStream(ctx, streamID)
 	}
-	ref := StreamRef{
-		Channel: "/" + c.options.namespace() + "/" + streamID,
-		ReplayAttributes: map[string]any{
-			"streamId": streamID,
-		},
-	}
-	return ref, nil
+	return StreamRef{Channel: "/" + c.options.namespace() + "/" + streamID, ReplayAttributes: map[string]any{"streamId": streamID}}, nil
 }
 
-func (c *Connector) cleanMap(input map[string]any) map[string]any {
+func cleanMap(input map[string]any) map[string]any {
 	out := map[string]any{}
 	for key, value := range input {
 		if value == nil || value == "" {
@@ -437,8 +541,21 @@ func (c *Connector) cleanMap(input map[string]any) map[string]any {
 	return out
 }
 
+func intField(item map[string]any, key string) (int, bool) {
+	switch value := item[key].(type) {
+	case int:
+		return value, true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	default:
+		return 0, false
+	}
+}
+
 func marshalMap(input map[string]any) (map[string]types.AttributeValue, error) {
-	return attributevalue.MarshalMapWithOptions(input, func(options *attributevalue.EncoderOptions) {
-		options.TagKey = "dynamodbav"
-	})
+	return attributevalue.MarshalMapWithOptions(input, func(options *attributevalue.EncoderOptions) { options.TagKey = "dynamodbav" })
 }

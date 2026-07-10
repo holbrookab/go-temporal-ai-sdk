@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 2,
+  "streamId": "stream-1",
+  "cursor": "01J00000000000000000000006",
+  "events": [],
+  "previews": [],
+  "records": [
+    {
+      "recordId": "message:assistant-1",
+      "recordVersion": 2,
+      "kind": "message",
+      "status": "completed",
+      "data": { "messageId": "assistant-1", "role": "assistant", "text": "Hello" },
+      "scope": { "displayMode": "assistant", "agentId": "agent-1" },
+      "updatedAt": 1010
+    }
+  ],
+  "terminal": {
+    "protocolVersion": 2,
+    "type": "stream-end",
+    "eventId": "stream:stream-1:end:completed",
+    "cursor": "01J00000000000000000000006",
+    "streamId": "stream-1",
+    "occurredAt": 1060,
+    "outcome": "completed"
+  }
+}

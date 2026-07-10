@@ -1,16 +1,7 @@
-# Redis DynamoDB Connector
+# Redis and DynamoDB connector
 
-`connectors/redis-dynamodb` publishes live stream frames through Redis and stores
-replayable stream state in DynamoDB.
-
-The import path contains a hyphen for readability, while the Go package name
-remains `redisdynamodb` because package identifiers cannot contain hyphens.
-
-```go
-import redisdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/redis-dynamodb"
-```
-
-## Use
+This adapter implements `updates.Connector`. It publishes the common protocol-v2
+JSON envelope through Redis and stores replay state in DynamoDB.
 
 ```go
 connector := redisdynamodb.New(redisdynamodb.Options{
@@ -21,57 +12,26 @@ connector := redisdynamodb.New(redisdynamodb.Options{
     }),
     TableName: "chat-production",
     Mode:      redisdynamodb.ModeBoth,
-    Resolver: redisdynamodb.NewDynamoDBResolver(redisdynamodb.DynamoDBResolverOptions{
-        DynamoDB:  dynamodb.NewFromConfig(cfg),
-        TableName: "chat-production",
-    }),
 })
+
+acts := activities.New(activities.Options{UpdateConnector: connector})
 ```
 
-Pass the connector to `activities.Options.StreamConnector` when registering
-Temporal activities.
+Modes:
 
-## Modes
+- `ModePubSub` publishes low-latency live updates (the default).
+- `ModeStream` appends updates to Redis Streams.
+- `ModeBoth` does both.
 
-- `ModePubSub`: publish live frames to Redis Pub/Sub only.
-- `ModeStream`: append live frames to Redis Streams only.
-- `ModeBoth`: publish to Pub/Sub and append to Redis Streams.
+DynamoDB behavior matches the AppSync adapter: bounded preview manifests,
+monotonic complete record snapshots, semantic cursor events, exact accepted
+attempt supersession, and persisted terminal state. Redis Stream entries carry
+`eventId`, `cursor`, `streamId`, and the raw v2 JSON payload.
 
-`ModePubSub` is the default. Use `ModeBoth` when consumers need low-latency live
-updates and stream catch-up.
+The default DynamoDB replay attributes are `updateStreamId`/`updateCursor`,
+`previewStreamId`/`previewUpdatedAt`, and
+`recordStreamId`/`recordUpdatedAt`, matching the TypeScript replay store; their
+names are configurable.
 
-## Behavior
-
-- `PublishLiveChunk` sends provisional provider-live frames to Redis.
-- `CompleteAttempt` persists the final attempt status and publishes the terminal
-  attempt event.
-- Replay data is stored in DynamoDB using `id` and `createdAt` by default.
-- `PersistEphemeralChunks` also writes provisional provider-live chunks to
-  DynamoDB with a TTL.
-
-## Stream Resolution
-
-The connector uses a `Resolver` to map a Temporal stream ID to:
-
-- the Redis Pub/Sub channel
-- the Redis Stream key
-- replay attributes copied onto DynamoDB stream records
-
-`NewDynamoDBResolver` reads the stream row from DynamoDB. By default it looks for
-`ownerUserId` or `scopeId`, then `parentConversationId` or `conversationId`.
-Override field names, prefixes, or formatter functions when your application
-uses different routing.
-If the stream row is missing, the resolver returns a typed
-`streaming.ErrStreamNotFound`/`streaming.StreamNotFoundError` so applications can
-use `errors.Is` or opt into `streaming.StreamFailurePolicyBestEffort`.
-
-## Required Options
-
-- `DynamoDB` or `AWSConfig`: DynamoDB client/config for replay persistence.
-- `Redis`: Redis universal client for live publishing.
-- `TableName`: DynamoDB table for stream attempts/events.
-- `Resolver`: stream ID resolver for Redis routing and replay attributes.
-
-Optional fields customize table key names, entity type strings, TTL, Redis
-prefixes, Redis Stream max length, and whether ephemeral chunks are durably
-persisted.
+The resolver maps `streamId` to Pub/Sub and Redis Stream keys plus DynamoDB
+replay attributes. A missing stream returns `updates.ErrStreamNotFound`.

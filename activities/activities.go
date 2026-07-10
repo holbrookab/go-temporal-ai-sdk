@@ -6,13 +6,13 @@ import (
 	"fmt"
 
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/activity"
 )
 
 type Options struct {
 	ModelProvider   ai.Provider
-	StreamConnector streaming.Connector
+	UpdateConnector updates.Connector
 	Tools           map[string]ai.Tool
 	ArtifactStore   ToolArtifactStore
 	Sandbox         ai.Sandbox
@@ -20,16 +20,16 @@ type Options struct {
 
 type Activities struct {
 	provider  ai.Provider
-	connector streaming.Connector
+	connector updates.Connector
 	tools     map[string]ai.Tool
 	artifacts ToolArtifactStore
 	sandbox   ai.Sandbox
 }
 
 func New(opts Options) *Activities {
-	connector := opts.StreamConnector
+	connector := opts.UpdateConnector
 	if connector == nil {
-		connector = streaming.NoopConnector{}
+		connector = updates.NoopConnector{}
 	}
 	return &Activities{
 		provider:  opts.ModelProvider,
@@ -46,7 +46,7 @@ func (a *Activities) InvokeModel(ctx context.Context, args InvokeModelArgs) (*In
 		return nil, err
 	}
 	options, streamOptions := extractStreamOptions(args.Options.ToAI())
-	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	relay := updates.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
 	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
 		return nil, err
 	}
@@ -61,13 +61,15 @@ func (a *Activities) InvokeModel(ctx context.Context, args InvokeModelArgs) (*In
 		return nil, err
 	}
 	if err := relayGenerateResult(ctx, relay, result); err != nil {
-		_ = relay.Discard(ctx, err.Error())
+		_ = relay.Fail(ctx, err.Error())
 		return nil, err
 	}
-	if err := relay.Commit(ctx); err != nil {
+	if err := relay.Succeed(ctx); err != nil {
 		return nil, err
 	}
-	return (*InvokeModelResult)(GenerateResultFromAI(result)), nil
+	wireResult := GenerateResultFromAI(result)
+	wireResult.PreviewReceipts = relay.Receipts()
+	return (*InvokeModelResult)(wireResult), nil
 }
 
 func (a *Activities) GenerateObject(ctx context.Context, args GenerateObjectArgs) (*GenerateObjectResult, error) {
@@ -77,9 +79,9 @@ func (a *Activities) GenerateObject(ctx context.Context, args GenerateObjectArgs
 	}
 	options, streamOptions := extractGenerateObjectStreamOptions(args.Options.ToAI(model))
 	if streamOptions.Lane == "" {
-		streamOptions.Lane = streaming.LaneObject
+		streamOptions.Lane = updates.LaneObject
 	}
-	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	relay := updates.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
 	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
 		return nil, err
 	}
@@ -94,13 +96,15 @@ func (a *Activities) GenerateObject(ctx context.Context, args GenerateObjectArgs
 		return nil, err
 	}
 	if err := relayGenerateObjectResult(ctx, relay, result); err != nil {
-		_ = relay.Discard(ctx, err.Error())
+		_ = relay.Fail(ctx, err.Error())
 		return nil, err
 	}
-	if err := relay.Commit(ctx); err != nil {
+	if err := relay.Succeed(ctx); err != nil {
 		return nil, err
 	}
-	return GenerateObjectResultFromAI(result), nil
+	wireResult := GenerateObjectResultFromAI(result)
+	wireResult.PreviewReceipts = relay.Receipts()
+	return wireResult, nil
 }
 
 func (a *Activities) StreamObject(ctx context.Context, args StreamObjectArgs) (*StreamObjectResult, error) {
@@ -110,9 +114,9 @@ func (a *Activities) StreamObject(ctx context.Context, args StreamObjectArgs) (*
 	}
 	options, streamOptions := extractStreamObjectStreamOptions(args.Options.ToAI(model))
 	if streamOptions.Lane == "" {
-		streamOptions.Lane = streaming.LaneObject
+		streamOptions.Lane = updates.LaneObject
 	}
-	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	relay := updates.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
 	if err := relay.Accept(ctx, ai.StreamPart{Type: "stream-start"}); err != nil {
 		return nil, err
 	}
@@ -174,7 +178,7 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 		return nil, errors.New("model returned nil stream")
 	}
 
-	relay := streaming.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
+	relay := updates.NewRelay(a.connector, withActivityAttempt(ctx, streamOptions))
 	outputTracker := newPartialOutputTracker(options.ResponseFormat)
 	parts := []ai.StreamPart{}
 	outputSeen := false
@@ -188,15 +192,15 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 			if !ok {
 				if !outputSeen {
 					err := ai.NewNoOutputGeneratedError("Model stream ended without producing output.", nil)
-					_ = relay.Discard(ctx, err.Error())
+					_ = relay.Fail(ctx, err.Error())
 					return nil, err
 				}
-				if err := relay.Commit(ctx); err != nil {
+				if err := relay.Succeed(ctx); err != nil {
 					return nil, err
 				}
 				result := GenerateResultFromAIStreamParts(parts, streamResult.Request, streamResult.Response)
 				return &InvokeModelStreamResult{
-					Result: result,
+					Result: result, PreviewReceipts: relay.Receipts(),
 				}, nil
 			}
 			part, extraParts := outputTracker.enrich(part)
@@ -211,19 +215,19 @@ func (a *Activities) InvokeModelStream(ctx context.Context, args InvokeModelStre
 				if part.Err != nil {
 					reason = part.Err.Error()
 				}
-				_ = relay.Discard(ctx, reason)
+				_ = relay.Fail(ctx, reason)
 				if part.Err != nil {
 					return nil, part.Err
 				}
 				return nil, errors.New(reason)
 			}
 			if err := relay.Accept(ctx, part); err != nil {
-				_ = relay.Discard(ctx, err.Error())
+				_ = relay.Fail(ctx, err.Error())
 				return nil, err
 			}
 			for _, extra := range extraParts {
 				if err := relay.Accept(ctx, extra); err != nil {
-					_ = relay.Discard(ctx, err.Error())
+					_ = relay.Fail(ctx, err.Error())
 					return nil, err
 				}
 			}
@@ -265,11 +269,18 @@ func isGeneratedOutputPart(part ai.StreamPart) bool {
 	}
 }
 
-func (a *Activities) PublishToolLifecycleEvent(ctx context.Context, args PublishToolLifecycleEventArgs) error {
-	if args.StreamID == "" {
-		return nil
+func (a *Activities) WriteRecord(ctx context.Context, args WriteRecordArgs) error {
+	if err := updates.ValidateEvent(&args.Event); err != nil {
+		return err
 	}
-	return a.connector.PublishToolLifecycleEvent(ctx, args)
+	return a.connector.UpsertRecord(ctx, args.Event)
+}
+
+func (a *Activities) EndStream(ctx context.Context, args EndStreamArgs) error {
+	if err := updates.ValidateEvent(&args.Event); err != nil {
+		return err
+	}
+	return a.connector.EndStream(ctx, args.Event)
 }
 
 func (a *Activities) languageModel(modelID string) (ai.LanguageModel, error) {
@@ -283,7 +294,7 @@ func (a *Activities) languageModel(modelID string) (ai.LanguageModel, error) {
 	return model, nil
 }
 
-func withActivityAttempt(ctx context.Context, options streaming.Options) streaming.Options {
+func withActivityAttempt(ctx context.Context, options updates.Options) updates.Options {
 	base := options.AttemptID
 	if base == "" {
 		base = "attempt"

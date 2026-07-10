@@ -1,253 +1,112 @@
 # go-temporal-ai-sdk
 
-Temporal-native runtime pieces for `github.com/holbrookab/go-ai`.
+Temporal-native activities and workflow helpers for
+[`github.com/holbrookab/go-ai`](https://github.com/holbrookab/go-ai).
 
-This package is not a direct TypeScript parity port. The goal is to make Temporal
-the durable execution backend for Go AI agents, model calls, tool calls, and
-visible streams.
+`go-ai` owns provider-compatible model and tool behavior. This module adds the
+Temporal-specific attempt, retry, acceptance, persistence, and replay boundary.
 
-## Current Surface
+## Packages
 
-- `activities`: worker-side activities that call real `go-ai` providers.
-- `temporalai`: workflow-safe helpers that schedule those activities.
-- `streaming`: connector contracts for live/replay stream infrastructure.
-- `connectors/appsync-dynamodb`: AppSync Events + DynamoDB connector adapter.
-- `connectors/redis-dynamodb`: Redis live transport + DynamoDB replay adapter.
+- `activities`: worker-side model, object, embedding, tool, record, and stream
+  termination activities.
+- `temporalai`: deterministic workflow helpers and the durable agent loop.
+- `updates`: protocol-v2 preview, record, replay, connector, and relay types.
+- `connectors/appsync-dynamodb`: AppSync Events live delivery with DynamoDB
+  preview/record/replay storage.
+- `connectors/redis-dynamodb`: Redis Pub/Sub or Streams live delivery with the
+  same DynamoDB storage model.
 
-Go Temporal workflows use `workflow.Context`, while `go-ai` uses
-`context.Context`, channels, and goroutines. Because of that, workflow code
-should use `temporalai` helpers instead of calling `go-ai.GenerateText` or
-`go-ai.StreamText` directly.
+The language-neutral frozen contract and fixtures live in [`protocol/v2`](protocol/v2/README.md).
+See [`docs/streaming.md`](docs/streaming.md) for runtime semantics and examples,
+and [`docs/migration-v2.md`](docs/migration-v2.md) for the v0.3 to v0.4 API map.
 
-## Stream Model
-
-The stream model has two phases:
-
-- `provider-live`: provisional chunks published by the model activity while it
-  reads the provider stream.
-- `canonical`: workflow-owned final state after the activity returns buffered
-  stream parts.
-
-Workflows do not receive token-by-token callbacks. The activity streams live
-chunks through a `streaming.Connector`, buffers all `go-ai` stream parts, and
-returns the buffer to the workflow when the activity completes.
-
-```text
-ModelCall activity
-  -> provider DoStream
-  -> streaming.Connector publishes provider-live chunks
-  -> returns buffered stream parts
-
-Workflow
-  -> receives completed activity result
-  -> owns final state, retries, cancellation, and commits
-```
-
-## Connector Shape
+## Worker registration
 
 ```go
-type Connector interface {
-    StartAttempt(context.Context, AttemptRef) error
-    PublishLiveChunk(context.Context, LiveChunk) error
-    UpdateAttemptSnapshot(context.Context, AttemptSnapshot) error
-    CompleteAttempt(context.Context, AttemptCompletion) error
-    PersistToolLifecycleEvent(context.Context, ToolLifecycleInput) error
-    PublishLiveToolLifecycleEvent(context.Context, ToolLifecycleInput) error
-    PublishToolLifecycleEvent(context.Context, ToolLifecycleInput) error
-}
-```
-
-`streaming.NewCompositeConnector` combines a durable `Store` and a live
-`Publisher`, which matches the common shape of a replay database plus low-latency
-fanout transport.
-
-The bundled AppSync/DynamoDB adapter is intentionally generic: applications
-decide how a `streamId` resolves to a live channel and replay attributes.
-
-```go
-import appsyncdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/appsync-dynamodb"
-
 connector := appsyncdynamodb.New(appsyncdynamodb.Options{
-    AWSConfig:          cfg,
-    TableName:          "chat-production",
-    AppSyncHTTPDomain:  "example.appsync-api.us-west-2.amazonaws.com",
-    Resolver: appsyncdynamodb.NewDynamoDBResolver(appsyncdynamodb.DynamoDBResolverOptions{
-        DynamoDB:  dynamodb.NewFromConfig(cfg),
-        TableName: "chat-production",
-    }),
+    AWSConfig:         cfg,
+    TableName:         "chat-production",
+    AppSyncHTTPDomain: "example.appsync-api.us-west-2.amazonaws.com",
 })
-```
 
-The Redis/DynamoDB adapter uses the same DynamoDB attempt/replay shape, but sends
-live frames through Redis. Use `ModePubSub` for low-latency fanout,
-`ModeStream` for Redis Streams, or `ModeBoth` when consumers need Pub/Sub speed
-and stream catch-up.
-
-```go
-import redisdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/redis-dynamodb"
-
-connector := redisdynamodb.New(redisdynamodb.Options{
-    AWSConfig: cfg,
-    DynamoDB:  dynamodb.NewFromConfig(cfg),
-    Redis: redis.NewUniversalClient(&redis.UniversalOptions{
-        Addrs: []string{"localhost:6379"},
-    }),
-    TableName: "chat-production",
-    Mode:      redisdynamodb.ModeBoth,
-})
-```
-
-## Worker Registration
-
-```go
 acts := activities.New(activities.Options{
     ModelProvider:   provider,
-    StreamConnector: connector,
+    UpdateConnector: connector,
     Sandbox:         sandbox,
     Tools: map[string]ai.Tool{
         "lookup": lookupTool,
     },
 })
-
 temporalai.RegisterActivities(worker, acts)
 ```
 
-`Sandbox` is worker-owned configuration. It is passed to `go-ai` tool
-executions as `ai.ToolExecutionOptions.Sandbox`, but it is not serialized through
-workflow inputs because sandbox implementations are process-local interfaces.
+`UpdateConnector` is strict by default. A preview storage or live publication
+failure fails the model activity and can cause Temporal to retry the provider
+call. `updates.FailurePolicyBestEffort` suppresses only a typed missing-stream
+error; it does not suppress auth, throttling, or transport failures.
 
-## Workflow Usage
-
-```go
-result, err := temporalai.InvokeModel(ctx, "model-id", ai.LanguageModelCallOptions{
-    Prompt: []ai.Message{ai.UserMessage("hello")},
-})
-```
-
-Structured output calls use the same durable activity boundary. The workflow
-passes a model ID separately from the serializable `GenerateObjectOptions`.
+## Live preview followed by durable acceptance
 
 ```go
-profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOptions{
-    Prompt:     "Return a user profile for Ada.",
-    SchemaName: "profile",
-    Schema: map[string]any{
-        "type": "object",
-        "properties": map[string]any{
-            "name": map[string]any{"type": "string"},
-        },
-        "required": []any{"name"},
-    },
-})
-```
-
-Visible updates are standardized through the same `streaming.Connector`
-configured on `activities.Options.StreamConnector`. Pass Temporal stream
-metadata under `ProviderOptions["temporal"]`; activities strip that key before
-calling the real model provider. If `Visible` is false or `StreamID` is empty,
-the relay is a no-op even when a connector is configured.
-
-`temporalai.InvokeModel`, `temporalai.GenerateObject`,
-`temporalai.StreamObject`, and `temporalai.InvokeModelStream` all use this
-opt-in shape:
-
-- `InvokeModel` emits attempt start, final text/reasoning/tool/file/source
-  chunks, finish, and committed completion.
-- `GenerateObject` emits attempt start, optional reasoning, a final object
-  snapshot, finish, and committed completion. It defaults to the object lane
-  when no lane is provided.
-- `StreamObject` wraps `ai.StreamObject`, emits object snapshots and element
-  chunks as upstream object parts arrive, drains the upstream `Elements` channel,
-  and returns buffered object stream parts/elements to the workflow. It defaults
-  to the object lane when no lane is provided.
-- `InvokeModelStream` emits provider stream chunks and partial JSON/object
-  snapshots as they arrive. With a JSON response format this is still text
-  streaming plus partial JSON parsing, not the object-native `StreamObject`
-  contract.
-
-```go
-stream, err := temporalai.InvokeModelStream(ctx, "model-id", ai.LanguageModelCallOptions{
+options := ai.LanguageModelCallOptions{
+    Prompt: []ai.Message{ai.UserMessage("Summarize this")},
     ProviderOptions: ai.ProviderOptions{
-        "temporal": streaming.Options{
-            Visible:  true,
-            StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-            Lane:     streaming.LaneText,
+        activities.ProviderOptionsKey: updates.Options{
+            Visible:        true,
+            StreamID:       workflow.GetInfo(ctx).WorkflowExecution.ID,
+            TargetRecordID: "message:assistant-1",
+            Lane:           updates.LaneText,
         },
     },
-})
+}
+
+previewed, err := temporalai.InvokeModelStream(ctx, "model-id", options)
+if err != nil {
+    return err
+}
+
+receipt := previewed.PreviewReceipts[0]
+record := updates.WorkflowRecord{
+    RecordID:      receipt.TargetRecordID,
+    RecordVersion: 1,
+    Kind:          updates.RecordKindMessage,
+    Status:        "completed",
+    Data: map[string]any{
+        "role": "assistant",
+        "text": receipt.Snapshot.Text,
+    },
+    Scope: receipt.Scope,
+}
+if err := temporalai.WriteRecord(ctx, streamID, record, receipt.AttemptID); err != nil {
+    return err
+}
 ```
 
-The same option can be passed to non-streaming calls when the UI needs visible
-progress or final snapshots without using a separate streaming activity.
-By default visible streaming is strict: connector failures make the model
-activity fail. Set `FailurePolicy` to
-`streaming.StreamFailurePolicyBestEffort` when the stream is a telemetry/UI
-side-channel and a missing stream row should degrade to no visible updates
-instead of retrying the model activity. Best-effort mode only suppresses typed
-`streaming.ErrStreamNotFound` errors; auth, throttling, publish, and other
-connector failures still propagate.
+The model activity emits `preview-begin`, `preview-chunk`, periodic
+`preview-snapshot`, and `preview-end`. A successful preview remains provisional.
+Only the separate workflow-scheduled `WriteRecord` activity emits the canonical
+`record-upsert` that names the exact accepted attempt.
+
+When every accepted record is readable, close the subscription explicitly:
 
 ```go
-result, err := temporalai.InvokeModel(ctx, "model-id", ai.LanguageModelCallOptions{
-    Prompt: []ai.Message{ai.UserMessage("summarize this")},
-    ProviderOptions: ai.ProviderOptions{
-        "temporal": streaming.Options{
-            Visible:       true,
-            StreamID:      workflow.GetInfo(ctx).WorkflowExecution.ID,
-            Lane:          streaming.LaneText,
-            FailurePolicy: streaming.StreamFailurePolicyBestEffort,
-        },
-    },
-})
-
-profile, err := temporalai.GenerateObject(ctx, "model-id", ai.GenerateObjectOptions{
-    Prompt: "Return a user profile for Ada.",
-    Schema: map[string]any{"type": "object"},
-    ProviderOptions: ai.ProviderOptions{
-        "temporal": streaming.Options{
-            Visible:       true,
-            StreamID:      workflow.GetInfo(ctx).WorkflowExecution.ID,
-            FailurePolicy: streaming.StreamFailurePolicyBestEffort,
-        },
-    },
-})
+if err := temporalai.EndStream(ctx, streamID, updates.StreamOutcomeCompleted, ""); err != nil {
+    return err
+}
 ```
 
-Use `StreamObject` when the model output is conceptually an object stream,
-especially array output where individual elements should become visible as they
-arrive.
+## Durable agents
 
-```go
-items, err := temporalai.StreamObject(ctx, "model-id", ai.StreamObjectOptions{
-    GenerateObjectOptions: ai.GenerateObjectOptions{
-        Output: ai.OutputArray,
-        Prompt: "Return matching contacts.",
-        Schema: map[string]any{
-            "type": "object",
-            "properties": map[string]any{
-                "name": map[string]any{"type": "string"},
-            },
-            "required": []any{"name"},
-        },
-        ProviderOptions: ai.ProviderOptions{
-            "temporal": streaming.Options{
-                Visible:  true,
-                StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-            },
-        },
-    },
-})
-```
+`temporalai.RunAgent` uses the same boundary automatically. Model activities
+return preview receipts. The workflow writes canonical message, tool, and
+tool-approval interaction records in separate record activities, so retrying
+record persistence cannot rerun a model or side-effecting tool.
 
-## Durable Agents
-
-`temporalai.RunAgent` is a workflow-side agent loop. Each model step is a model
-activity. Tool calls default to regular activities, and workflows can opt into
-local tool activities for short idempotent tools by setting an agent default or
-per-tool execution boundary. Tool lifecycle chunks are published from inside the
-tool activity through the same stream connector used by model streaming. The
-durable lifecycle write is part of the activity retry envelope; live fanout is
-attempted after the durable write and does not make the activity fail.
+The new record commands are behind Temporal `GetVersion` change
+`go-temporal-ai-sdk.durable-records-v2`. Replaying a history created before
+v0.4 takes `workflow.DefaultVersion` and schedules none of the new activities;
+new workflow runs record version `1` and use the v2 path.
 
 ```go
 result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
@@ -255,224 +114,20 @@ result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
     ModelID:      "model-id",
     Instructions: "Use tools when useful.",
     Prompt:       "Find the latest durable execution notes.",
-    Tools: activities.ToolDefinitionsFromAI(map[string]ai.Tool{
-        "lookup": lookupTool,
-    }),
-    Stream: streaming.Options{
+    Tools:        activities.ToolDefinitionsFromAI(tools),
+    Stream: updates.Options{
         Visible:  true,
         StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-        Lane:     streaming.LaneText,
     },
 })
 ```
 
-The default tool execution mode is parallel. Set
-`ToolExecution: temporalai.ToolExecutionSequential` when a workflow wants strict
-one-at-a-time tool scheduling.
-
-Tool execution boundaries are independent from parallel/sequential scheduling.
-The SDK default is `activities.ToolExecutionBoundaryActivity`, which keeps tool
-calls as regular Temporal activities. Use
-`DefaultToolBoundary: activities.ToolExecutionBoundaryLocalActivity` when an
-agent should run short, idempotent tools as local activities by default, and set
-`ExecutionBoundary: activities.ToolExecutionBoundaryActivity` on individual
-tools that should always use regular activities.
-
-```go
-tools := activities.ToolDefinitionsFromAI(map[string]ai.Tool{
-    "lookup": lookupTool,
-    "convertOfficeDocumentToPdf": convertOfficeTool,
-})
-for i := range tools {
-    if tools[i].Name == "convertOfficeDocumentToPdf" {
-        tools[i].ExecutionBoundary = activities.ToolExecutionBoundaryActivity
-    }
-}
-
-result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
-    AgentID:                  "researcher",
-    ModelID:                  "model-id",
-    Prompt:                   "Review these documents.",
-    Tools:                    tools,
-    DefaultToolBoundary:      activities.ToolExecutionBoundaryLocalActivity,
-    LocalToolTimeoutFallback: temporalai.LocalToolTimeoutFallbackActivity,
-}, temporalai.ActivityOptions{
-    LocalTool: workflow.LocalActivityOptions{
-        StartToCloseTimeout: 15 * time.Second,
-        RetryPolicy: &temporal.RetryPolicy{
-            MaximumAttempts: 1,
-        },
-    },
-})
-```
-
-Local tool activities skip the task queue, run on the same worker as the
-workflow task, and are intended for short operations where the latency savings
-matter. They are still retried and still need idempotency. When a local tool
-times out, agents retry that same tool call as a regular activity by default.
-Set `LocalToolTimeoutFallback: temporalai.LocalToolTimeoutFallbackNone` to
-disable that fallback. Set `ActivityOptions.LocalTool.RetryPolicy` when you want
-to control how many local attempts happen before the regular-activity fallback;
-`MaximumAttempts: 1` makes the first local timeout switch immediately.
-
-If a tool is slow, weakly idempotent, needs an isolated task queue, or needs a
-durable checkpoint immediately after completion, keep it as a regular activity.
-
-Approval-required tools can be marked before they reach the agent loop:
-
-```go
-tools := activities.ToolDefinitionsFromAI(map[string]ai.Tool{
-    "create_worker": createWorkerTool,
-})
-for i := range tools {
-    if tools[i].Name == "create_worker" {
-        tools[i].RequiresApproval = true
-    }
-}
-
-result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
-    AgentID: "worker-admin",
-    ModelID: "model-id",
-    Prompt:  "Create the worker if the extracted details look right.",
-    Tools:   tools,
-    Stream: streaming.Options{
-        Visible:  true,
-        StreamID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-        Lane:     streaming.LaneText,
-    },
-})
-```
-
-When an approval-required tool is called, the workflow publishes AI SDK-shaped
-`tool-input-available` and `tool-approval-request` chunks, waits for a Temporal
-signal named by `temporalai.ToolApprovalResponseSignalName(approvalID)`, then
-publishes `tool-approval-response`. Approved tools receive the approval state in
-their activity input; denied or timed-out approvals publish `tool-output-denied`
-and do not schedule the tool activity. Plan previews and richer feedback UI
-should be represented as assistant text or `data-*` UI chunks; the SDK approval
-path is the durable gate before executing a concrete tool call.
-
-Short model calls can also opt into local activity execution. This is useful
-for lightweight routing or classification calls where the latency savings are
-worth holding the workflow task open briefly. Longer reasoning calls and
-visible streaming calls should usually remain regular activities.
-
-```go
-route, err := temporalai.InvokeModel(ctx, "router-model", options, temporalai.ActivityOptions{
-    LanguageModelBoundary: activities.ToolExecutionBoundaryLocalActivity,
-    LocalLanguageModel: workflow.LocalActivityOptions{
-        StartToCloseTimeout: 20 * time.Second,
-        Summary:             "SelectSkill",
-        RetryPolicy: &temporal.RetryPolicy{
-            MaximumAttempts: 1,
-        },
-    },
-})
-```
-
-Invoke helpers set Temporal activity summaries by default, so UI/CLI surfaces
-can show labels such as `go-temporal-ai-sdk.InvokeModel` and
-`go-temporal-ai-sdk.InvokeTool` when the server and UI expose user metadata.
-
-Nested agents can be modeled as child workflows with
-`temporalai.ExecuteAgentChildWorkflow`, keeping the parent agent history focused
-on child workflow boundaries rather than every nested step.
-
-Inspectable background subagents can also be declared directly on `AgentInput`.
-The model-facing subagent remains a tool, but invoking it starts an asynchronous
-Temporal child workflow and immediately returns a durable `subagentId`. The
-parent model can continue and use the built-in `list_subagents`,
-`inspect_subagent`, `wait_subagent`, `message_subagent`, and `cancel_subagent`
-tools to supervise it.
-
-```go
-result, err := temporalai.RunAgent(ctx, temporalai.AgentInput{
-    AgentID: "coordinator",
-    ModelID: "model-id",
-    Prompt:  "Delegate the repository research and supervise it.",
-    Subagents: []temporalai.SubagentDefinition{{
-        Tool: activities.ToolDefinition{
-            Name:        "research",
-            Description: "Research a repository question in an isolated context.",
-        },
-        Agent: &temporalai.AgentInput{
-            AgentID:      "researcher",
-            ModelID:      "model-id",
-            Instructions: "Research carefully and finish with a concise summary.",
-            Tools:        researchTools,
-        },
-        TaskQueue: "research-agents",
-        ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
-    }},
-})
-```
-
-The default subagent input schema accepts `{ "task": "..." }`; provide a custom
-schema on `SubagentDefinition.Tool` when the delegated task has additional
-fields. `WorkflowType` defaults to `temporalai.AgentWorkflow`, which must be
-registered on the selected worker. A custom registered workflow name can be
-provided when the child needs a specialized wrapper.
-
-Child `RunAgent` executions send coarse step snapshots back to the parent with
-the durable `temporalai.SubagentProgressSignalName` signal. Token-level and tool
-streaming continues through the configured stream connector using a nested
-`AgentID`/`TaskID` scope, avoiding one Workflow History event per token. External
-services can inspect the parent's current snapshots through the
-`temporalai.SubagentsQueryName` Query. Additional parent instructions are sent
-to the child with `temporalai.SubagentMessageSignalName` and are appended as a
-user message before the child's next model step.
-
-Subagent launch tools cannot themselves require approval. Tools inside the child
-agent can still use the normal durable approval flow. The default
-`wait_subagent` timeout is 30 seconds and can be overridden with
-`timeoutSeconds`; a timeout returns the latest snapshot rather than failing the
-parent agent.
-
-Tool lifecycle event IDs are stable per tool call: `tool:<toolCallId>:input`,
-`tool:<toolCallId>:approval-request`,
-`tool:<toolCallId>:approval-response`, and `tool:<toolCallId>:terminal`.
-Bundled durable connectors treat duplicate event IDs as idempotent success so
-activity retries do not create duplicate start/end frames.
-
-Non-agent Go activities can opt into the same behavior by wrapping their body
-with `activities.RunWithToolLifecycle`. The activity input still has to provide
-the stream and tool metadata; the SDK will not infer `streamId`, `toolCallId`,
-`toolName`, input, or result mapping from an arbitrary activity signature.
-
-## Development
-
-Release commits should depend on tagged `go-ai` versions from `go.mod`. For
-local sibling development, use a temporary workspace:
-
-```bash
-go work init . ../go-ai
-```
-
-Run tests with a workspace-local Go cache if the sandbox cannot write to the
-default OS cache:
-
-```bash
-GOCACHE=$PWD/.cache/go-build go test ./...
-```
-
-Repository releases are tagged and published by the manual GitHub Actions
-`Release` workflow. Prepare a dated `CHANGELOG.md` section, push the release
-commit to `main`, then dispatch the workflow with the version without a `v`
-prefix:
-
-```bash
-gh workflow run release.yml --ref main -f version=0.3.0
-```
-
-The workflow validates the changelog section, runs `go test ./...` and
-`go vet ./...`, creates the annotated `v<version>` tag on the selected commit,
-and publishes a GitHub release using that changelog section as its notes. It is
-safe to rerun when the existing tag points to the same commit.
-
-`go-ai` provider packages are imported by workers directly. New providers in
-`go-ai` releases, such as Anthropic or community OpenRouter, do not require an
-SDK registry change as long as they satisfy the normal `ai.Provider` interface.
+Tool approval is a generic `interaction` record with
+`interactionType: "tool-approval"`. The Go workflow authors the question and
+choices and waits for the existing Temporal signal. Signed provider approval
+fields remain preserved in the model wire types, but do not create a human gate
+unless the workflow requests one.
 
 ## License
 
-This project is licensed under Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [`LICENSE`](LICENSE).

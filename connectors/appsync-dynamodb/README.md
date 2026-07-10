@@ -1,16 +1,7 @@
-# AppSync DynamoDB Connector
+# AppSync Events and DynamoDB connector
 
-`connectors/appsync-dynamodb` publishes live stream frames to AppSync Events and
-stores replayable stream state in DynamoDB.
-
-The import path contains a hyphen for readability, while the Go package name
-remains `appsyncdynamodb` because package identifiers cannot contain hyphens.
-
-```go
-import appsyncdynamodb "github.com/holbrookab/go-temporal-ai-sdk/connectors/appsync-dynamodb"
-```
-
-## Use
+This adapter implements `updates.Connector`. It publishes the common protocol-v2
+JSON envelope to AppSync Events and stores replay state in DynamoDB.
 
 ```go
 connector := appsyncdynamodb.New(appsyncdynamodb.Options{
@@ -23,41 +14,31 @@ connector := appsyncdynamodb.New(appsyncdynamodb.Options{
         TableName: "chat-production",
     }),
 })
+
+acts := activities.New(activities.Options{UpdateConnector: connector})
 ```
 
-Pass the connector to `activities.Options.StreamConnector` when registering
-Temporal activities.
+Behavior:
 
-## Behavior
+- `preview-begin`, snapshots, and terminal attempt state update one preview
+  manifest keyed by stream and attempt. Failed, canceled, succeeded, and
+  superseded manifests use the configured audit `TTL` (one hour by default).
+- Preview chunks are live only; replay uses bounded manifests rather than every
+  token delta.
+- `record-upsert` writes the monotonic current record, then a semantic durable
+  event with a store-assigned cursor, then publishes live.
+- Idempotent retries reuse the stored cursor. Lower record versions are ignored;
+  conflicting reuse of one version returns `updates.ErrRecordConflict`.
+- `stream-end` is persisted as both a cursor event and terminal state before it
+  is published.
 
-- `PublishLiveChunk` signs and posts live frames to AppSync Events.
-- `CompleteAttempt` persists the final attempt status and publishes the terminal
-  attempt event.
-- Replay data is stored in DynamoDB using `id` and `createdAt` by default.
-- `PersistEphemeralChunks` also writes provisional provider-live chunks to
-  DynamoDB with a TTL.
+The resolver maps `streamId` to an AppSync channel and replay attributes. A
+missing row returns `updates.ErrStreamNotFound`, which the preview relay can
+handle only when explicitly configured with `updates.FailurePolicyBestEffort`.
 
-## Stream Resolution
-
-The connector uses a `Resolver` to map a Temporal stream ID to:
-
-- the AppSync channel to publish to
-- replay attributes copied onto DynamoDB stream records
-
-`NewDynamoDBResolver` reads the stream row from DynamoDB. By default it looks for
-`ownerUserId` or `scopeId`, then `parentConversationId` or `conversationId`.
-Override field names or `ChannelFormatter` when your application uses different
-table attributes or channel routing.
-If the stream row is missing, the resolver returns a typed
-`streaming.ErrStreamNotFound`/`streaming.StreamNotFoundError` so applications can
-use `errors.Is` or opt into `streaming.StreamFailurePolicyBestEffort`.
-
-## Required Options
-
-- `AWSConfig`: AWS SDK config used when a DynamoDB client is not supplied.
-- `TableName`: DynamoDB table for stream attempts/events.
-- `AppSyncHTTPDomain`: AppSync Events HTTP domain without a scheme.
-- `Resolver`: stream ID resolver for live channel and replay attributes.
-
-Optional fields customize table key names, entity type strings, TTL, HTTP client,
-SigV4 signer, and whether ephemeral chunks are durably persisted.
+Table key names, state sort key, entity type strings, TTL, HTTP client, and
+SigV4 signer are configurable. The default replay attributes are
+`updateStreamId`/`updateCursor`, `previewStreamId`/`previewUpdatedAt`, and
+`recordStreamId`/`recordUpdatedAt`, matching the TypeScript replay store;
+their names are configurable. Canonical record and terminal rows do not use the
+preview audit TTL.

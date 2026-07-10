@@ -1,0 +1,163 @@
+[
+  {
+    "protocolVersion": 2,
+    "type": "preview-begin",
+    "eventId": "preview:attempt-1:0:begin",
+    "streamId": "stream-1",
+    "occurredAt": 1000,
+    "attemptId": "attempt-1",
+    "targetRecordId": "message:assistant-1",
+    "lane": "text",
+    "sequence": 0,
+    "scope": { "displayMode": "assistant", "agentId": "agent-1" }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "preview-chunk",
+    "eventId": "preview:attempt-1:1:chunk",
+    "streamId": "stream-1",
+    "occurredAt": 1001,
+    "attemptId": "attempt-1",
+    "targetRecordId": "message:assistant-1",
+    "lane": "text",
+    "sequence": 1,
+    "scope": { "displayMode": "assistant", "agentId": "agent-1" },
+    "chunk": { "type": "text-delta", "delta": "Hello" }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "preview-snapshot",
+    "eventId": "preview:attempt-1:1:snapshot",
+    "streamId": "stream-1",
+    "occurredAt": 1002,
+    "attemptId": "attempt-1",
+    "targetRecordId": "message:assistant-1",
+    "lane": "text",
+    "sequence": 1,
+    "scope": { "displayMode": "assistant", "agentId": "agent-1" },
+    "snapshot": { "text": "Hello" }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "preview-end",
+    "eventId": "preview:attempt-1:2:end",
+    "streamId": "stream-1",
+    "occurredAt": 1003,
+    "attemptId": "attempt-1",
+    "targetRecordId": "message:assistant-1",
+    "lane": "text",
+    "sequence": 2,
+    "scope": { "displayMode": "assistant", "agentId": "agent-1" },
+    "outcome": "succeeded",
+    "snapshot": { "text": "Hello" }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "record-upsert",
+    "eventId": "message:assistant-1:v2",
+    "cursor": "01J00000000000000000000001",
+    "streamId": "stream-1",
+    "occurredAt": 1010,
+    "acceptedAttemptId": "attempt-1",
+    "record": {
+      "recordId": "message:assistant-1",
+      "recordVersion": 2,
+      "kind": "message",
+      "status": "completed",
+      "data": { "messageId": "assistant-1", "role": "assistant", "text": "Hello" },
+      "scope": { "displayMode": "assistant", "agentId": "agent-1" },
+      "updatedAt": 1010
+    }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "record-upsert",
+    "eventId": "tool:call-1:v2",
+    "cursor": "01J00000000000000000000002",
+    "streamId": "stream-1",
+    "occurredAt": 1020,
+    "record": {
+      "recordId": "tool:call-1",
+      "recordVersion": 2,
+      "kind": "tool",
+      "status": "succeeded",
+      "data": { "toolCallId": "call-1", "toolName": "lookup", "output": { "ok": true } },
+      "scope": { "displayMode": "assistant", "stepId": "step-0", "stepNumber": 0 },
+      "updatedAt": 1020
+    }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "record-upsert",
+    "eventId": "interaction:approval-1:v1",
+    "cursor": "01J00000000000000000000003",
+    "streamId": "stream-1",
+    "occurredAt": 1030,
+    "record": {
+      "recordId": "interaction:approval-1",
+      "recordVersion": 1,
+      "kind": "interaction",
+      "status": "pending",
+      "data": {
+        "interactionId": "approval-1",
+        "interactionType": "tool-approval",
+        "title": "Review lookup",
+        "questions": [{
+          "id": "approval-1",
+          "prompt": "Allow this tool call?",
+          "choices": [
+            { "id": "approve", "label": "Approve", "value": { "approved": true } },
+            { "id": "deny", "label": "Deny", "value": { "approved": false } }
+          ],
+          "required": true
+        }],
+        "origin": { "toolCallId": "call-1", "toolName": "lookup" }
+      },
+      "scope": { "displayMode": "assistant", "stepId": "step-0", "stepNumber": 0 },
+      "updatedAt": 1030
+    }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "record-upsert",
+    "eventId": "task:task-1:v3",
+    "cursor": "01J00000000000000000000004",
+    "streamId": "stream-1",
+    "occurredAt": 1040,
+    "record": {
+      "recordId": "task:task-1",
+      "recordVersion": 3,
+      "kind": "task",
+      "status": "completed",
+      "data": { "taskId": "task-1", "title": "Research", "result": { "text": "Done" } },
+      "scope": { "displayMode": "task", "taskId": "task-1", "taskTitle": "Research" },
+      "updatedAt": 1040
+    }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "record-upsert",
+    "eventId": "subagent:research-1:v2",
+    "cursor": "01J00000000000000000000005",
+    "streamId": "stream-1",
+    "occurredAt": 1050,
+    "record": {
+      "recordId": "subagent:research-1",
+      "recordVersion": 2,
+      "kind": "subagent",
+      "status": "running",
+      "data": { "subagentId": "research-1", "workflowId": "parent/research-1", "text": "Working" },
+      "scope": { "displayMode": "task", "agentId": "researcher", "taskId": "task-1" },
+      "updatedAt": 1050
+    }
+  },
+  {
+    "protocolVersion": 2,
+    "type": "stream-end",
+    "eventId": "stream:stream-1:end:completed",
+    "cursor": "01J00000000000000000000006",
+    "streamId": "stream-1",
+    "occurredAt": 1060,
+    "outcome": "completed"
+  }
+]

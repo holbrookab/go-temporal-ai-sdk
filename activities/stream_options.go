@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 const ProviderOptionsKey = "temporal"
 
-func extractStreamOptions(options ai.LanguageModelCallOptions) (ai.LanguageModelCallOptions, streaming.Options) {
+func extractStreamOptions(options ai.LanguageModelCallOptions) (ai.LanguageModelCallOptions, updates.Options) {
 	providerOptions := cloneProviderOptions(options.ProviderOptions)
 	streamOptions := parseStreamOptions(providerOptions[ProviderOptionsKey])
 	delete(providerOptions, ProviderOptionsKey)
@@ -17,7 +17,7 @@ func extractStreamOptions(options ai.LanguageModelCallOptions) (ai.LanguageModel
 	return options, streamOptions
 }
 
-func extractGenerateObjectStreamOptions(options ai.GenerateObjectOptions) (ai.GenerateObjectOptions, streaming.Options) {
+func extractGenerateObjectStreamOptions(options ai.GenerateObjectOptions) (ai.GenerateObjectOptions, updates.Options) {
 	providerOptions := cloneProviderOptions(options.ProviderOptions)
 	streamOptions := parseStreamOptions(providerOptions[ProviderOptionsKey])
 	delete(providerOptions, ProviderOptionsKey)
@@ -25,26 +25,26 @@ func extractGenerateObjectStreamOptions(options ai.GenerateObjectOptions) (ai.Ge
 	return options, streamOptions
 }
 
-func extractStreamObjectStreamOptions(options ai.StreamObjectOptions) (ai.StreamObjectOptions, streaming.Options) {
+func extractStreamObjectStreamOptions(options ai.StreamObjectOptions) (ai.StreamObjectOptions, updates.Options) {
 	generateOptions, streamOptions := extractGenerateObjectStreamOptions(options.GenerateObjectOptions)
 	options.GenerateObjectOptions = generateOptions
 	return options, streamOptions
 }
 
-func parseStreamOptions(value any) streaming.Options {
+func parseStreamOptions(value any) updates.Options {
 	if value == nil {
-		return streaming.Options{}
+		return updates.Options{}
 	}
-	if opts, ok := value.(streaming.Options); ok {
+	if opts, ok := value.(updates.Options); ok {
 		return opts
 	}
 	bytes, err := json.Marshal(value)
 	if err != nil {
-		return streaming.Options{}
+		return updates.Options{}
 	}
-	var opts streaming.Options
+	var opts updates.Options
 	if err := json.Unmarshal(bytes, &opts); err != nil {
-		return streaming.Options{}
+		return updates.Options{}
 	}
 	return opts
 }

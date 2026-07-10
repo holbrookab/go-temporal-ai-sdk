@@ -4,8 +4,6 @@ import (
 	"crypto/rand"
 	"sync"
 	"time"
-
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
 )
 
 var (
@@ -61,12 +59,4 @@ func encodeULID(ms int64, entropy [10]byte) string {
 		}
 	}
 	return string(out[:])
-}
-
-func attemptStorageKey(input streaming.AttemptRef) string {
-	toolCallID := input.ToolCallID
-	if toolCallID == "" {
-		toolCallID = "_"
-	}
-	return input.StreamID + "#" + string(input.Lane) + "#" + toolCallID + "#" + input.AttemptID
 }

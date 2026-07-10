@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://holbrookab.dev/temporal-ai/protocol/v2/update-event.schema.json",
+  "title": "Temporal Durable Update Event v2",
+  "oneOf": [
+    { "$ref": "#/$defs/previewBegin" },
+    { "$ref": "#/$defs/previewChunk" },
+    { "$ref": "#/$defs/previewSnapshot" },
+    { "$ref": "#/$defs/previewEnd" },
+    { "$ref": "#/$defs/recordUpsert" },
+    { "$ref": "#/$defs/streamEnd" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": { "const": 2 },
+        "type": { "type": "string" },
+        "eventId": { "type": "string", "minLength": 1 },
+        "cursor": { "type": "string", "minLength": 1 },
+        "streamId": { "type": "string", "minLength": 1 },
+        "occurredAt": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["protocolVersion", "type", "eventId", "streamId", "occurredAt"]
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "displayMode": { "type": "string" },
+        "agentId": { "type": "string" },
+        "taskId": { "type": "string" },
+        "taskTitle": { "type": "string" },
+        "skillName": { "type": "string" },
+        "stepId": { "type": "string" },
+        "stepNumber": { "type": "integer", "minimum": 0 },
+        "stepType": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "object": true,
+        "elements": { "type": "array", "items": true }
+      },
+      "additionalProperties": false
+    },
+    "previewBase": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "properties": {
+            "attemptId": { "type": "string", "minLength": 1 },
+            "targetRecordId": { "type": "string", "minLength": 1 },
+            "lane": { "enum": ["text", "reasoning", "object", "tool-input"] },
+            "sequence": { "type": "integer", "minimum": 0 },
+            "scope": { "$ref": "#/$defs/scope" }
+          },
+          "required": ["attemptId", "targetRecordId", "lane", "sequence"]
+        }
+      ]
+    },
+    "previewBegin": {
+      "allOf": [
+        { "$ref": "#/$defs/previewBase" },
+        { "type": "object", "properties": { "type": { "const": "preview-begin" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "previewChunk": {
+      "allOf": [
+        { "$ref": "#/$defs/previewBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "preview-chunk" },
+            "chunk": {
+              "type": "object",
+              "properties": { "type": { "type": "string", "minLength": 1 } },
+              "required": ["type"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["chunk"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "previewSnapshot": {
+      "allOf": [
+        { "$ref": "#/$defs/previewBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "preview-snapshot" },
+            "snapshot": { "$ref": "#/$defs/snapshot" }
+          },
+          "required": ["snapshot"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "previewEnd": {
+      "allOf": [
+        { "$ref": "#/$defs/previewBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "preview-end" },
+            "outcome": { "enum": ["succeeded", "failed", "canceled"] },
+            "reason": { "type": "string" },
+            "snapshot": { "$ref": "#/$defs/snapshot" }
+          },
+          "required": ["outcome"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "recordId": { "type": "string", "minLength": 1 },
+        "recordVersion": { "type": "integer", "minimum": 1 },
+        "kind": { "enum": ["message", "tool", "interaction", "task", "subagent"] },
+        "status": { "type": "string", "minLength": 1 },
+        "data": { "type": "object", "additionalProperties": true },
+        "scope": { "$ref": "#/$defs/scope" },
+        "updatedAt": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["recordId", "recordVersion", "kind", "status", "data", "updatedAt"],
+      "additionalProperties": false
+    },
+    "recordUpsert": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "record-upsert" },
+            "acceptedAttemptId": { "type": "string", "minLength": 1 },
+            "record": { "$ref": "#/$defs/record" }
+          },
+          "required": ["record"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "streamEnd": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "stream-end" },
+            "outcome": { "enum": ["completed", "failed", "canceled"] },
+            "error": { "type": "string" }
+          },
+          "required": ["outcome"]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

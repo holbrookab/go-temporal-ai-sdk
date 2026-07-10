@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/holbrookab/go-ai/packages/ai"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 type LanguageModelCallOptions struct {
@@ -99,26 +100,28 @@ type Part struct {
 }
 
 type LanguageModelGenerateResult struct {
-	Content          []Part              `json:"content,omitempty"`
-	FinishReason     ai.FinishReason     `json:"finishReason,omitempty"`
-	Usage            ai.Usage            `json:"usage,omitempty"`
-	Warnings         []ai.Warning        `json:"warnings,omitempty"`
-	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
-	Request          RequestMetadata     `json:"request,omitempty"`
-	Response         ResponseMetadata    `json:"response,omitempty"`
+	Content          []Part                   `json:"content,omitempty"`
+	FinishReason     ai.FinishReason          `json:"finishReason,omitempty"`
+	Usage            ai.Usage                 `json:"usage,omitempty"`
+	Warnings         []ai.Warning             `json:"warnings,omitempty"`
+	ProviderMetadata ai.ProviderMetadata      `json:"providerMetadata,omitempty"`
+	Request          RequestMetadata          `json:"request,omitempty"`
+	Response         ResponseMetadata         `json:"response,omitempty"`
+	PreviewReceipts  []updates.PreviewReceipt `json:"previewReceipts,omitempty"`
 }
 
 type GenerateObjectResult struct {
-	Object           any                 `json:"object,omitempty"`
-	FinishReason     string              `json:"finishReason,omitempty"`
-	RawFinishReason  string              `json:"rawFinishReason,omitempty"`
-	Usage            ai.Usage            `json:"usage,omitempty"`
-	Warnings         []ai.Warning        `json:"warnings,omitempty"`
-	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
-	Request          RequestMetadata     `json:"request,omitempty"`
-	Response         ResponseMetadata    `json:"response,omitempty"`
-	Reasoning        string              `json:"reasoning,omitempty"`
-	Text             string              `json:"text,omitempty"`
+	Object           any                      `json:"object,omitempty"`
+	FinishReason     string                   `json:"finishReason,omitempty"`
+	RawFinishReason  string                   `json:"rawFinishReason,omitempty"`
+	Usage            ai.Usage                 `json:"usage,omitempty"`
+	Warnings         []ai.Warning             `json:"warnings,omitempty"`
+	ProviderMetadata ai.ProviderMetadata      `json:"providerMetadata,omitempty"`
+	Request          RequestMetadata          `json:"request,omitempty"`
+	Response         ResponseMetadata         `json:"response,omitempty"`
+	Reasoning        string                   `json:"reasoning,omitempty"`
+	Text             string                   `json:"text,omitempty"`
+	PreviewReceipts  []updates.PreviewReceipt `json:"previewReceipts,omitempty"`
 }
 
 type ObjectStreamPart struct {
@@ -742,7 +745,8 @@ func (part StreamPart) ToAI() ai.StreamPart {
 
 func (result InvokeModelStreamResult) ToAI() InvokeModelStreamAIResult {
 	out := InvokeModelStreamAIResult{
-		StreamParts: StreamPartsToAI(result.StreamParts),
+		StreamParts:     StreamPartsToAI(result.StreamParts),
+		PreviewReceipts: append([]updates.PreviewReceipt(nil), result.PreviewReceipts...),
 	}
 	if result.Request != nil {
 		out.Request = *result.Request
@@ -758,16 +762,18 @@ func (result InvokeModelStreamResult) ToAI() InvokeModelStreamAIResult {
 }
 
 type InvokeModelStreamAIResult struct {
-	StreamParts []ai.StreamPart
-	Request     ai.RequestMetadata
-	Response    ai.ResponseMetadata
-	Result      *ai.LanguageModelGenerateResult
+	StreamParts     []ai.StreamPart
+	Request         ai.RequestMetadata
+	Response        ai.ResponseMetadata
+	Result          *ai.LanguageModelGenerateResult
+	PreviewReceipts []updates.PreviewReceipt
 }
 
 func (result StreamObjectResult) ToAI() StreamObjectAIResult {
 	out := StreamObjectAIResult{
-		StreamParts: ObjectStreamPartsToAI(result.StreamParts),
-		Elements:    result.Elements,
+		StreamParts:     ObjectStreamPartsToAI(result.StreamParts),
+		Elements:        result.Elements,
+		PreviewReceipts: append([]updates.PreviewReceipt(nil), result.PreviewReceipts...),
 	}
 	if result.Request != nil {
 		out.Request = *result.Request
@@ -779,8 +785,9 @@ func (result StreamObjectResult) ToAI() StreamObjectAIResult {
 }
 
 type StreamObjectAIResult struct {
-	StreamParts []ai.ObjectStreamPart
-	Elements    []any
-	Request     ai.RequestMetadata
-	Response    ai.ResponseMetadata
+	StreamParts     []ai.ObjectStreamPart
+	Elements        []any
+	Request         ai.RequestMetadata
+	Response        ai.ResponseMetadata
+	PreviewReceipts []updates.PreviewReceipt
 }

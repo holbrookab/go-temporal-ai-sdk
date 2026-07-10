@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-10
+
+- Replaced the v1 `streaming` package with the clean-break protocol-v2
+  `updates` package and frozen cross-language JSON schemas/fixtures.
+- Added provisional `preview-begin`, `preview-chunk`, `preview-snapshot`, and
+  `preview-end` events plus activity-returned preview receipts.
+- Added workflow-authored, versioned `message`, `tool`, `interaction`, `task`,
+  and `subagent` records. `acceptedAttemptId` supersedes only the exact provider
+  attempt selected by the workflow.
+- Added separate idempotent `WriteRecord` and `EndStream` activities and
+  workflow helpers so persistence/fanout retries cannot rerun models or tools.
+- Guarded the new `RunAgent` record commands with Temporal `GetVersion` so
+  workflow histories started before v0.4 replay without nondeterminism.
+- Replaced tool lifecycle events and synthesized checkpoint output with generic
+  tool records and `tool-approval` interaction records authored by workflows.
+- Updated AppSync/DynamoDB and Redis/DynamoDB adapters to persist preview
+  manifests, monotonic current records, reusable store cursors, and terminal
+  stream state while publishing the common v2 envelope. Event identity hashes
+  include the full semantic payload, including exact attempt acceptance.
+- Preserved signed provider approval fields in Temporal wire serialization.
+- Added the streaming/failure guide, complete v0.3 migration table, adapter
+  guides, conformance fixtures, and execution-count coverage.
+
 ## 0.3.0 - 2026-07-10
 
 - Bumped `go-ai` to `v0.3.0` and preserved its signed tool-approval request and

@@ -7,6 +7,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
@@ -237,8 +238,8 @@ func TestInvokeActivityOptionsDefaultSummaries(t *testing.T) {
 	if got := toolActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeToolActivity {
 		t.Fatalf("tool summary = %q", got)
 	}
-	if got := streamActivityOptions(ActivityOptions{}).Summary; got != activities.PublishToolLifecycleEventActivity {
-		t.Fatalf("stream summary = %q", got)
+	if got := recordActivityOptions(ActivityOptions{}).Summary; got != activities.WriteRecordActivity {
+		t.Fatalf("record summary = %q", got)
 	}
 	if got := localLanguageModelActivityOptions(ActivityOptions{}).Summary; got != activities.InvokeModelActivity {
 		t.Fatalf("local language model summary = %q", got)
@@ -254,12 +255,45 @@ func TestInvokeActivityOptionsDefaultSummaries(t *testing.T) {
 	}
 }
 
+func TestWriteRecordAndEndStreamWorkflowHelpers(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	var records []activities.WriteRecordArgs
+	var terminals []activities.EndStreamArgs
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.WriteRecordArgs) error {
+		records = append(records, args)
+		return nil
+	}, activityRegisterOptions(activities.WriteRecordActivity))
+	env.RegisterActivityWithOptions(func(_ context.Context, args activities.EndStreamArgs) error {
+		terminals = append(terminals, args)
+		return nil
+	}, activityRegisterOptions(activities.EndStreamActivity))
+	env.ExecuteWorkflow(testWriteRecordWorkflow)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Event.AcceptedAttemptID != "attempt-1" || records[0].Event.Record.UpdatedAt == 0 {
+		t.Fatalf("records = %#v", records)
+	}
+	if len(terminals) != 1 || terminals[0].Event.Outcome != updates.StreamOutcomeCompleted {
+		t.Fatalf("terminals = %#v", terminals)
+	}
+}
+
 func testInvokeModelWorkflow(ctx workflow.Context) (string, error) {
 	result, err := InvokeModel(ctx, "model-1", ai.LanguageModelCallOptions{})
 	if err != nil {
 		return "", err
 	}
 	return ai.TextFromParts(result.Content), nil
+}
+
+func testWriteRecordWorkflow(ctx workflow.Context) error {
+	record := updates.WorkflowRecord{RecordID: "message:1", RecordVersion: 1, Kind: updates.RecordKindMessage, Status: "completed", Data: map[string]any{"text": "ok"}}
+	if err := WriteRecord(ctx, "stream-1", record, "attempt-1"); err != nil {
+		return err
+	}
+	return EndStream(ctx, "stream-1", updates.StreamOutcomeCompleted, "")
 }
 
 func testGenerateObjectWorkflow(ctx workflow.Context) (string, error) {

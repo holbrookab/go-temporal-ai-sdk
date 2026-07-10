@@ -6,7 +6,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -21,6 +21,7 @@ const (
 	LocalToolTimeoutFallbackNone     LocalToolTimeoutFallback = "none"
 
 	toolArtifactCompactionChange = "go-temporal-ai-sdk.tool-artifact-compaction"
+	durableRecordsChange         = "go-temporal-ai-sdk.durable-records-v2"
 )
 
 type LocalToolTimeoutFallback string
@@ -36,7 +37,7 @@ type AgentInput struct {
 	FirstToolChoice          ai.ToolChoice                       `json:"firstToolChoice,omitempty"`
 	MaxSteps                 int                                 `json:"maxSteps,omitempty"`
 	ModelOptions             activities.LanguageModelCallOptions `json:"modelOptions,omitempty"`
-	Stream                   streaming.Options                   `json:"stream,omitempty"`
+	Stream                   updates.Options                     `json:"stream,omitempty"`
 	UseStreamingModel        bool                                `json:"useStreamingModel,omitempty"`
 	ToolContext              any                                 `json:"toolContext,omitempty"`
 	ToolExecution            string                              `json:"toolExecution,omitempty"`
@@ -72,19 +73,20 @@ type AgentStep struct {
 }
 
 type AgentToolCall struct {
-	ToolCallID       string              `json:"toolCallId"`
-	ToolName         string              `json:"toolName"`
-	StepID           string              `json:"stepId,omitempty"`
-	StepNumber       int                 `json:"stepNumber"`
-	StepType         string              `json:"stepType,omitempty"`
-	Input            any                 `json:"input,omitempty"`
-	InputRaw         string              `json:"inputRaw,omitempty"`
-	ProviderExecuted bool                `json:"providerExecuted,omitempty"`
-	Dynamic          bool                `json:"dynamic,omitempty"`
-	Invalid          bool                `json:"invalid,omitempty"`
-	ErrorText        string              `json:"errorText,omitempty"`
-	ToolMetadata     ai.ProviderMetadata `json:"toolMetadata,omitempty"`
-	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
+	ToolCallID        string              `json:"toolCallId"`
+	ToolName          string              `json:"toolName"`
+	StepID            string              `json:"stepId,omitempty"`
+	StepNumber        int                 `json:"stepNumber"`
+	StepType          string              `json:"stepType,omitempty"`
+	Input             any                 `json:"input,omitempty"`
+	InputRaw          string              `json:"inputRaw,omitempty"`
+	ProviderExecuted  bool                `json:"providerExecuted,omitempty"`
+	Dynamic           bool                `json:"dynamic,omitempty"`
+	Invalid           bool                `json:"invalid,omitempty"`
+	ErrorText         string              `json:"errorText,omitempty"`
+	ToolMetadata      ai.ProviderMetadata `json:"toolMetadata,omitempty"`
+	ProviderMetadata  ai.ProviderMetadata `json:"providerMetadata,omitempty"`
+	AcceptedAttemptID string              `json:"acceptedAttemptId,omitempty"`
 }
 
 func AgentWorkflow(ctx workflow.Context, input AgentInput) (*AgentResult, error) {
@@ -116,9 +118,16 @@ func toolArtifactPolicyForActivity(policy activities.ToolArtifactPolicy) *activi
 	return &policy
 }
 
+func durableRecordsEnabled(ctx workflow.Context) bool {
+	return workflow.GetVersion(ctx, durableRecordsChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion
+}
+
 func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...ActivityOptions) (*AgentResult, error) {
-	publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusRunning, Sequence: 1})
-	result, err := runAgentLoop(ctx, input, activityOptions...)
+	writeRecords := durableRecordsEnabled(ctx)
+	if err := publishSubagentProgress(ctx, input, SubagentSnapshot{Status: SubagentStatusRunning, Sequence: 1}, writeRecords, activityOptions...); err != nil {
+		return nil, err
+	}
+	result, err := runAgentLoop(ctx, input, writeRecords, activityOptions...)
 	snapshot := SubagentSnapshot{Sequence: 2}
 	if result != nil {
 		snapshot.Sequence = len(result.Steps) + 2
@@ -136,11 +145,13 @@ func RunAgent(ctx workflow.Context, input AgentInput, activityOptions ...Activit
 	} else {
 		snapshot.Status = SubagentStatusCompleted
 	}
-	publishSubagentProgress(ctx, input, snapshot)
+	if progressErr := publishSubagentProgress(ctx, input, snapshot, writeRecords, activityOptions...); progressErr != nil && err == nil {
+		return result, progressErr
+	}
 	return result, err
 }
 
-func runAgentLoop(ctx workflow.Context, input AgentInput, activityOptions ...ActivityOptions) (*AgentResult, error) {
+func runAgentLoop(ctx workflow.Context, input AgentInput, writeRecords bool, activityOptions ...ActivityOptions) (*AgentResult, error) {
 	if input.ModelID == "" {
 		return nil, fmt.Errorf("modelId is required")
 	}
@@ -191,6 +202,12 @@ func runAgentLoop(ctx workflow.Context, input AgentInput, activityOptions ...Act
 			Text:        textFromWireParts(modelResult.Content),
 			ToolCalls:   extractToolCalls(modelResult.Content, stepID, stepNumber, stepType),
 		}
+		attachToolPreviewReceipts(step.ToolCalls, modelResult.PreviewReceipts)
+		if writeRecords {
+			if err := writeAgentMessageRecords(ctx, input, step, modelResult.PreviewReceipts, activityOptions...); err != nil {
+				return nil, err
+			}
+		}
 		result.Text = step.Text
 		result.FinishReason = modelResult.FinishReason.Unified
 		result.RawFinishReason = modelResult.FinishReason.Raw
@@ -200,12 +217,14 @@ func runAgentLoop(ctx workflow.Context, input AgentInput, activityOptions ...Act
 
 		messages = append(messages, activities.Message{Role: ai.RoleAssistant, Content: modelResult.Content})
 		result.Messages = append([]activities.Message(nil), messages...)
-		publishSubagentStep(ctx, input, step, stepNumber+2)
+		if err := publishSubagentStep(ctx, input, step, stepNumber+2, writeRecords, activityOptions...); err != nil {
+			return nil, err
+		}
 		if len(step.ToolCalls) == 0 {
 			result.Steps = append(result.Steps, step)
 			return result, nil
 		}
-		toolResults, err := executeAgentTools(ctx, subagents, input, messages, step.ToolCalls, activityOptions...)
+		toolResults, err := executeAgentTools(ctx, subagents, input, messages, step.ToolCalls, writeRecords, activityOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -220,12 +239,12 @@ func runAgentLoop(ctx workflow.Context, input AgentInput, activityOptions ...Act
 	return result, nil
 }
 
-func publishSubagentStep(ctx workflow.Context, input AgentInput, step AgentStep, sequence int) {
+func publishSubagentStep(ctx workflow.Context, input AgentInput, step AgentStep, sequence int, writeRecords bool, activityOptions ...ActivityOptions) error {
 	toolCalls := make([]SubagentToolCallSnapshot, 0, len(step.ToolCalls))
 	for _, call := range step.ToolCalls {
 		toolCalls = append(toolCalls, SubagentToolCallSnapshot{ToolCallID: call.ToolCallID, ToolName: call.ToolName})
 	}
-	publishSubagentProgress(ctx, input, SubagentSnapshot{
+	return publishSubagentProgress(ctx, input, SubagentSnapshot{
 		Status:       SubagentStatusRunning,
 		Sequence:     sequence,
 		StepNumber:   step.StepNumber,
@@ -233,7 +252,7 @@ func publishSubagentStep(ctx workflow.Context, input AgentInput, step AgentStep,
 		Text:         step.Text,
 		ToolCalls:    toolCalls,
 		FinishReason: step.ModelResult.FinishReason.Unified,
-	})
+	}, writeRecords, activityOptions...)
 }
 
 func ExecuteAgentChildWorkflow(ctx workflow.Context, workflowType any, input AgentInput, options ...workflow.ChildWorkflowOptions) (*AgentResult, error) {
@@ -263,20 +282,20 @@ func invokeAgentModel(ctx workflow.Context, input AgentInput, options activities
 	return wire, nil
 }
 
-func executeAgentTools(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentTools(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, writeRecords bool, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	if input.ToolExecution == ToolExecutionSequential {
-		return executeAgentToolsSequential(ctx, subagents, input, messages, calls, activityOptions...)
+		return executeAgentToolsSequential(ctx, subagents, input, messages, calls, writeRecords, activityOptions...)
 	}
-	return executeAgentToolsParallel(ctx, subagents, input, messages, calls, activityOptions...)
+	return executeAgentToolsParallel(ctx, subagents, input, messages, calls, writeRecords, activityOptions...)
 }
 
-func executeAgentToolsSequential(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentToolsSequential(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, writeRecords bool, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	results := make([]activities.InvokeToolResult, 0, len(calls))
 	for _, call := range calls {
 		if call.ProviderExecuted {
 			continue
 		}
-		result, err := executeOneAgentTool(ctx, subagents, input, messages, call, activityOptions...)
+		result, err := executeOneAgentTool(ctx, subagents, input, messages, call, writeRecords, activityOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -285,7 +304,7 @@ func executeAgentToolsSequential(ctx workflow.Context, subagents *subagentManage
 	return results, nil
 }
 
-func executeAgentToolsParallel(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
+func executeAgentToolsParallel(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, calls []AgentToolCall, writeRecords bool, activityOptions ...ActivityOptions) ([]activities.InvokeToolResult, error) {
 	type toolOutcome struct {
 		index  int
 		result *activities.InvokeToolResult
@@ -301,7 +320,7 @@ func executeAgentToolsParallel(ctx workflow.Context, subagents *subagentManager,
 		toolCall := call
 		count++
 		workflow.Go(ctx, func(ctx workflow.Context) {
-			result, err := executeOneAgentTool(ctx, subagents, input, messages, toolCall, activityOptions...)
+			result, err := executeOneAgentTool(ctx, subagents, input, messages, toolCall, writeRecords, activityOptions...)
 			outcomes.Send(ctx, toolOutcome{index: index, result: result, err: err})
 		})
 	}
@@ -319,37 +338,56 @@ func executeAgentToolsParallel(ctx workflow.Context, subagents *subagentManager,
 	return results, nil
 }
 
-func executeOneAgentTool(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, call AgentToolCall, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
+func executeOneAgentTool(ctx workflow.Context, subagents *subagentManager, input AgentInput, messages []activities.Message, call AgentToolCall, writeRecords bool, activityOptions ...ActivityOptions) (*activities.InvokeToolResult, error) {
 	if result, handled, err := subagents.execute(ctx, call); handled {
 		return result, err
 	}
-	ao := ActivityOptions{}
-	if len(activityOptions) > 0 {
-		ao = activityOptions[0]
+	ao := aoFromActivityOptions(activityOptions...)
+	if writeRecords {
+		if err := writeAgentToolRecord(ctx, input, call, nil, 1, call.AcceptedAttemptID, ao); err != nil {
+			return nil, err
+		}
 	}
-	approval, inputPublished, deniedResult, err := approveAgentToolIfRequired(ctx, input, call, ao)
+	approval, deniedResult, err := approveAgentToolIfRequired(ctx, input, call, writeRecords, ao)
 	if err != nil {
 		return nil, err
 	}
 	if deniedResult != nil {
+		if writeRecords {
+			if err := writeAgentToolRecord(ctx, input, call, deniedResult, 2, "", ao); err != nil {
+				return nil, err
+			}
+		}
 		return deniedResult, nil
 	}
-	future, boundary := executeAgentToolFuture(ctx, input, messages, call, approval, inputPublished, ao)
-	return agentToolResultFromFuture(ctx, input, messages, call, ao, future, boundary, approval, inputPublished)
+	future, boundary := executeAgentToolFuture(ctx, input, messages, call, approval, ao)
+	result, err := agentToolResultFromFuture(ctx, input, messages, call, ao, future, boundary, approval)
+	if err != nil {
+		failed := &activities.InvokeToolResult{ToolCallID: call.ToolCallID, ToolName: call.ToolName, Input: call.Input, IsError: true, Output: ai.ToolResultOutput{Type: "error-text", Value: err.Error()}}
+		if writeRecords {
+			_ = writeAgentToolRecord(ctx, input, call, failed, 2, "", ao)
+		}
+		return nil, err
+	}
+	if writeRecords {
+		if err := writeAgentToolRecord(ctx, input, call, result, 2, "", ao); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
-func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, approval *activities.ToolApprovalState, suppressInputLifecycle bool, options ActivityOptions) (workflow.Future, activities.ToolExecutionBoundary) {
+func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, approval *activities.ToolApprovalState, options ActivityOptions) (workflow.Future, activities.ToolExecutionBoundary) {
 	args := activities.InvokeToolArgs{
-		ToolCallID:             call.ToolCallID,
-		ToolName:               call.ToolName,
-		Input:                  call.Input,
-		Messages:               messages,
-		Context:                input.ToolContext,
-		ToolMetadata:           call.ToolMetadata,
-		Lifecycle:              toolLifecycleOptions(ctx, input, call),
-		Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
-		Approval:               approval,
-		SuppressInputLifecycle: suppressInputLifecycle,
+		ToolCallID:   call.ToolCallID,
+		ToolName:     call.ToolName,
+		Input:        call.Input,
+		Messages:     messages,
+		Context:      input.ToolContext,
+		ToolMetadata: call.ToolMetadata,
+		Scope:        agentToolScope(input, call),
+		Artifacts:    toolArtifactPolicyForActivity(input.ToolArtifacts),
+		Approval:     approval,
 	}
 	boundary := toolExecutionBoundary(input, call.ToolName)
 	switch boundary {
@@ -361,21 +399,20 @@ func executeAgentToolFuture(ctx workflow.Context, input AgentInput, messages []a
 	}
 }
 
-func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions, future workflow.Future, boundary activities.ToolExecutionBoundary, approval *activities.ToolApprovalState, suppressInputLifecycle bool) (*activities.InvokeToolResult, error) {
+func agentToolResultFromFuture(ctx workflow.Context, input AgentInput, messages []activities.Message, call AgentToolCall, options ActivityOptions, future workflow.Future, boundary activities.ToolExecutionBoundary, approval *activities.ToolApprovalState) (*activities.InvokeToolResult, error) {
 	var result activities.InvokeToolResult
 	if err := future.Get(ctx, &result); err != nil {
 		if shouldFallbackLocalToolTimeout(input, boundary, err) {
 			args := activities.InvokeToolArgs{
-				ToolCallID:             call.ToolCallID,
-				ToolName:               call.ToolName,
-				Input:                  call.Input,
-				Messages:               messages,
-				Context:                input.ToolContext,
-				ToolMetadata:           call.ToolMetadata,
-				Lifecycle:              toolLifecycleOptions(ctx, input, call),
-				Artifacts:              toolArtifactPolicyForActivity(input.ToolArtifacts),
-				Approval:               approval,
-				SuppressInputLifecycle: suppressInputLifecycle,
+				ToolCallID:   call.ToolCallID,
+				ToolName:     call.ToolName,
+				Input:        call.Input,
+				Messages:     messages,
+				Context:      input.ToolContext,
+				ToolMetadata: call.ToolMetadata,
+				Scope:        agentToolScope(input, call),
+				Artifacts:    toolArtifactPolicyForActivity(input.ToolArtifacts),
+				Approval:     approval,
 			}
 			var fallbackResult activities.InvokeToolResult
 			if fallbackErr := executeAgentToolActivityFuture(ctx, args, options).Get(ctx, &fallbackResult); fallbackErr != nil {
@@ -399,68 +436,33 @@ func shouldFallbackLocalToolTimeout(input AgentInput, boundary activities.ToolEx
 		temporal.IsTimeoutError(err)
 }
 
-func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call AgentToolCall, options ActivityOptions) (*activities.ToolApprovalState, bool, *activities.InvokeToolResult, error) {
+func approveAgentToolIfRequired(ctx workflow.Context, input AgentInput, call AgentToolCall, writeRecords bool, options ActivityOptions) (*activities.ToolApprovalState, *activities.InvokeToolResult, error) {
 	definition, ok := agentToolDefinition(input, call.ToolName)
 	if !ok || !definition.RequiresApproval {
-		return nil, false, nil, nil
+		return nil, nil, nil
 	}
-	lifecycle := toolLifecycleOptions(ctx, input, call)
-	metadata := mergeApprovalMetadata(lifecycle.Metadata, input.ToolApproval.Metadata)
-	inputPublished := false
-	if lifecycle.StreamID != "" {
-		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:      toolApprovalEventID(call.ToolCallID, "input"),
-			StreamID:     lifecycle.StreamID,
-			Event:        streaming.ToolInputAvailable,
-			ToolCallID:   call.ToolCallID,
-			ToolName:     call.ToolName,
-			Input:        call.Input,
-			Dynamic:      call.Dynamic,
-			ToolMetadata: call.ToolMetadata,
-			Metadata:     metadata,
-			Scope:        lifecycle.Scope,
-		}, options); err != nil {
-			return nil, false, nil, err
-		}
-		inputPublished = true
-	}
+	metadata := mergeApprovalMetadata(toolRecordMetadata(input), input.ToolApproval.Metadata)
 	approvalID := fmt.Sprintf("%s:approval", call.ToolCallID)
-	response, err := RequestToolApproval(ctx, ToolApprovalRequest{
-		StreamID:        lifecycle.StreamID,
-		ApprovalID:      approvalID,
-		ToolCallID:      call.ToolCallID,
-		ToolName:        call.ToolName,
-		Input:           call.Input,
-		ToolMetadata:    call.ToolMetadata,
-		Metadata:        metadata,
-		Scope:           lifecycle.Scope,
-		DurableRequired: lifecycle.DurableRequired,
-		Timeout:         input.ToolApproval.Timeout,
-		SignalName:      input.ToolApproval.SignalName,
-	}, options)
+	response, err := requestToolApproval(ctx, ToolApprovalRequest{
+		StreamID:     updateStreamID(ctx, input),
+		ApprovalID:   approvalID,
+		ToolCallID:   call.ToolCallID,
+		ToolName:     call.ToolName,
+		Input:        call.Input,
+		ToolMetadata: call.ToolMetadata,
+		Metadata:     metadata,
+		Scope:        agentToolScope(input, call),
+		Timeout:      input.ToolApproval.Timeout,
+		SignalName:   input.ToolApproval.SignalName,
+	}, writeRecords, options)
 	if err != nil {
-		return nil, inputPublished, nil, err
+		return nil, nil, err
 	}
 	approval := toolApprovalState(response)
 	if response.Approved {
-		return approval, inputPublished, nil, nil
+		return approval, nil, nil
 	}
-	result := deniedAgentToolResult(call, response.Reason)
-	if lifecycle.StreamID != "" {
-		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:      toolApprovalEventID(call.ToolCallID, "terminal"),
-			StreamID:     lifecycle.StreamID,
-			Event:        streaming.ToolOutputDenied,
-			ToolCallID:   call.ToolCallID,
-			ToolName:     call.ToolName,
-			ToolMetadata: call.ToolMetadata,
-			Metadata:     metadata,
-			Scope:        lifecycle.Scope,
-		}, options); err != nil {
-			return nil, inputPublished, nil, err
-		}
-	}
-	return approval, inputPublished, result, nil
+	return approval, deniedAgentToolResult(call, response.Reason), nil
 }
 
 func deniedAgentToolResult(call AgentToolCall, reason string) *activities.InvokeToolResult {
@@ -553,13 +555,20 @@ func withAgentStreamOptions(ctx workflow.Context, input AgentInput, stepID strin
 	if options.StreamID == "" {
 		options.StreamID = streamID(ctx, "")
 	}
-	if options.AttemptID == "" {
+	targetRecordBase := options.TargetRecordID
+	if targetRecordBase == "" {
+		targetRecordBase = fmt.Sprintf("message:%s", options.StreamID)
+	}
+	options.TargetRecordID = fmt.Sprintf("%s:%s", targetRecordBase, stepID)
+	attemptBase := options.AttemptID
+	if attemptBase == "" {
 		agentID := input.AgentID
 		if agentID == "" {
 			agentID = "agent"
 		}
-		options.AttemptID = fmt.Sprintf("%s:%s", agentID, stepID)
+		attemptBase = agentID
 	}
+	options.AttemptID = fmt.Sprintf("%s:%s", attemptBase, stepID)
 	if !options.Visible && input.UseStreamingModel {
 		options.Visible = true
 	}
@@ -578,7 +587,7 @@ func agentStepType(stepNumber int) string {
 	return "tool-result"
 }
 
-func agentStepScope(input AgentInput, stepID string, stepNumber int, stepType string) streaming.Scope {
+func agentStepScope(input AgentInput, stepID string, stepNumber int, stepType string) updates.Scope {
 	scope := input.Stream.Scope
 	toolContextScope := streamScopeFromContext(input.ToolContext)
 	if scope.AgentID == "" {
@@ -599,14 +608,14 @@ func agentStepScope(input AgentInput, stepID string, stepNumber int, stepType st
 	return scope
 }
 
-func agentToolScope(input AgentInput, call AgentToolCall) streaming.Scope {
+func agentToolScope(input AgentInput, call AgentToolCall) updates.Scope {
 	stepNumber := call.StepNumber
 	return agentStepScope(input, call.StepID, stepNumber, call.StepType)
 }
 
-func streamScopeFromContext(context any) streaming.Scope {
+func streamScopeFromContext(context any) updates.Scope {
 	metadata := toolLifecycleMetadataFromContext(context)
-	return streaming.Scope{
+	return updates.Scope{
 		TaskID:    stringFromMetadata(metadata, "taskId"),
 		TaskTitle: stringFromMetadata(metadata, "taskTitle"),
 		SkillName: stringFromMetadata(metadata, "skillName"),
@@ -629,29 +638,131 @@ func streamID(ctx workflow.Context, configured string) string {
 	return workflow.GetInfo(ctx).WorkflowExecution.ID
 }
 
-func toolLifecycleStreamID(ctx workflow.Context, input AgentInput) string {
+func updateStreamID(ctx workflow.Context, input AgentInput) string {
 	if !input.Stream.Visible && input.Stream.StreamID == "" && !input.UseStreamingModel {
 		return ""
 	}
 	return streamID(ctx, input.Stream.StreamID)
 }
 
-func toolLifecycleOptions(ctx workflow.Context, input AgentInput, call AgentToolCall) activities.ToolLifecycleOptions {
-	streamID := toolLifecycleStreamID(ctx, input)
-	if streamID == "" {
-		return activities.ToolLifecycleOptions{}
-	}
-	scope := agentToolScope(input, call)
-	metadata := map[string]any{"agentId": scope.AgentID}
+func toolRecordMetadata(input AgentInput) map[string]any {
+	metadata := map[string]any{"agentId": input.AgentID}
 	for key, value := range toolLifecycleMetadataFromContext(input.ToolContext) {
 		metadata[key] = value
 	}
-	return activities.ToolLifecycleOptions{
-		StreamID:        streamID,
-		Metadata:        metadata,
-		DurableRequired: true,
-		Scope:           scope,
+	return metadata
+}
+
+func attachToolPreviewReceipts(calls []AgentToolCall, receipts []updates.PreviewReceipt) {
+	for i := range calls {
+		target := "tool:" + calls[i].ToolCallID
+		for _, receipt := range receipts {
+			if receipt.Outcome == updates.PreviewOutcomeSucceeded && receipt.TargetRecordID == target && receipt.Lane == updates.LaneToolInput {
+				calls[i].AcceptedAttemptID = receipt.AttemptID
+				break
+			}
+		}
 	}
+}
+
+func writeAgentMessageRecords(ctx workflow.Context, input AgentInput, step AgentStep, receipts []updates.PreviewReceipt, activityOptions ...ActivityOptions) error {
+	streamID := updateStreamID(ctx, input)
+	if streamID == "" {
+		return nil
+	}
+	wrote := false
+	for _, receipt := range receipts {
+		if receipt.Outcome != updates.PreviewOutcomeSucceeded || (receipt.Lane != updates.LaneText && receipt.Lane != updates.LaneReasoning && receipt.Lane != updates.LaneObject) {
+			continue
+		}
+		data := map[string]any{
+			"messageId": receipt.TargetRecordID,
+			"role":      "assistant",
+		}
+		switch receipt.Lane {
+		case updates.LaneReasoning:
+			data["reasoning"] = receipt.Snapshot.Text
+		case updates.LaneObject:
+			data["object"] = receipt.Snapshot.Object
+			if len(receipt.Snapshot.Elements) > 0 {
+				data["elements"] = receipt.Snapshot.Elements
+			}
+		default:
+			data["text"] = receipt.Snapshot.Text
+		}
+		record := updates.WorkflowRecord{
+			RecordID:      receipt.TargetRecordID,
+			RecordVersion: 1,
+			Kind:          updates.RecordKindMessage,
+			Status:        "completed",
+			Data:          data,
+			Scope:         receipt.Scope,
+		}
+		if err := WriteRecord(ctx, streamID, record, receipt.AttemptID, activityOptions...); err != nil {
+			return err
+		}
+		wrote = true
+	}
+	if wrote {
+		return nil
+	}
+	recordID := input.Stream.TargetRecordID
+	if recordID == "" {
+		recordID = fmt.Sprintf("message:%s", streamID)
+	}
+	recordID = fmt.Sprintf("%s:%s", recordID, step.StepID)
+	return WriteRecord(ctx, streamID, updates.WorkflowRecord{
+		RecordID:      recordID,
+		RecordVersion: 1,
+		Kind:          updates.RecordKindMessage,
+		Status:        "completed",
+		Data: map[string]any{
+			"messageId": recordID,
+			"role":      "assistant",
+			"text":      step.Text,
+		},
+		Scope: agentStepScope(input, step.StepID, step.StepNumber, step.StepType),
+	}, "", activityOptions...)
+}
+
+func writeAgentToolRecord(ctx workflow.Context, input AgentInput, call AgentToolCall, result *activities.InvokeToolResult, version int, acceptedAttemptID string, activityOptions ...ActivityOptions) error {
+	streamID := updateStreamID(ctx, input)
+	if streamID == "" {
+		return nil
+	}
+	status := "running"
+	data := map[string]any{
+		"toolCallId":       call.ToolCallID,
+		"toolName":         call.ToolName,
+		"input":            call.Input,
+		"dynamic":          call.Dynamic,
+		"providerExecuted": call.ProviderExecuted,
+	}
+	if len(call.ToolMetadata) > 0 {
+		data["toolMetadata"] = call.ToolMetadata
+	}
+	if len(call.ProviderMetadata) > 0 {
+		data["providerMetadata"] = call.ProviderMetadata
+	}
+	if result != nil {
+		status = "succeeded"
+		data["output"] = result.Output
+		data["result"] = result.Result
+		data["preliminary"] = result.Preliminary
+		if result.Output.Type == "execution-denied" {
+			status = "denied"
+		} else if result.IsError {
+			status = "failed"
+		}
+	}
+	return WriteRecord(ctx, streamID, updates.WorkflowRecord{
+		RecordID:      "tool:" + call.ToolCallID,
+		RecordVersion: version,
+		Kind:          updates.RecordKindTool,
+		Status:        status,
+		Data:          data,
+		Scope:         agentToolScope(input, call),
+	}, acceptedAttemptID, activityOptions...)
 }
 
 func toolLifecycleMetadataFromContext(context any) map[string]any {
@@ -760,11 +871,14 @@ func textFromWireParts(parts []activities.Part) string {
 
 func generateResultFromStream(result *activities.InvokeModelStreamAIResult) *activities.LanguageModelGenerateResult {
 	if result.Result != nil {
-		return activities.GenerateResultFromAI(result.Result)
+		wire := activities.GenerateResultFromAI(result.Result)
+		wire.PreviewReceipts = append([]updates.PreviewReceipt(nil), result.PreviewReceipts...)
+		return wire
 	}
 	out := &activities.LanguageModelGenerateResult{
-		Request:  result.Request,
-		Response: activities.ResponseMetadataFromAI(result.Response),
+		Request:         result.Request,
+		Response:        activities.ResponseMetadataFromAI(result.Response),
+		PreviewReceipts: append([]updates.PreviewReceipt(nil), result.PreviewReceipts...),
 	}
 	var text string
 	var reasoning string

@@ -6,7 +6,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -21,17 +21,16 @@ type AgentToolApprovalOptions struct {
 }
 
 type ToolApprovalRequest struct {
-	StreamID        string              `json:"streamId,omitempty"`
-	ApprovalID      string              `json:"approvalId"`
-	ToolCallID      string              `json:"toolCallId"`
-	ToolName        string              `json:"toolName"`
-	Input           any                 `json:"input,omitempty"`
-	ToolMetadata    ai.ProviderMetadata `json:"toolMetadata,omitempty"`
-	Metadata        map[string]any      `json:"metadata,omitempty"`
-	DurableRequired bool                `json:"durableRequired,omitempty"`
-	Timeout         time.Duration       `json:"timeout,omitempty"`
-	SignalName      string              `json:"signalName,omitempty"`
-	streaming.Scope
+	StreamID     string              `json:"streamId,omitempty"`
+	ApprovalID   string              `json:"approvalId"`
+	ToolCallID   string              `json:"toolCallId"`
+	ToolName     string              `json:"toolName"`
+	Input        any                 `json:"input,omitempty"`
+	ToolMetadata ai.ProviderMetadata `json:"toolMetadata,omitempty"`
+	Metadata     map[string]any      `json:"metadata,omitempty"`
+	Timeout      time.Duration       `json:"timeout,omitempty"`
+	SignalName   string              `json:"signalName,omitempty"`
+	updates.Scope
 }
 
 type ToolApprovalResponse struct {
@@ -44,6 +43,10 @@ type ToolApprovalResponse struct {
 }
 
 func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, activityOptions ...ActivityOptions) (*ToolApprovalResponse, error) {
+	return requestToolApproval(ctx, request, durableRecordsEnabled(ctx), activityOptions...)
+}
+
+func requestToolApproval(ctx workflow.Context, request ToolApprovalRequest, writeRecords bool, activityOptions ...ActivityOptions) (*ToolApprovalResponse, error) {
 	if request.ApprovalID == "" {
 		return nil, fmt.Errorf("approvalId is required")
 	}
@@ -53,37 +56,14 @@ func RequestToolApproval(ctx workflow.Context, request ToolApprovalRequest, acti
 	if request.ToolName == "" {
 		return nil, fmt.Errorf("toolName is required")
 	}
-	if request.StreamID != "" {
-		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:      toolApprovalEventID(request.ToolCallID, "approval-request"),
-			StreamID:     request.StreamID,
-			Event:        streaming.ToolApprovalRequest,
-			ToolCallID:   request.ToolCallID,
-			ToolName:     request.ToolName,
-			ApprovalID:   request.ApprovalID,
-			Input:        request.Input,
-			ToolMetadata: request.ToolMetadata,
-			Metadata:     request.Metadata,
-			Scope:        request.Scope,
-		}, activityOptions...); err != nil {
+	if writeRecords && request.StreamID != "" {
+		if err := WriteRecord(ctx, request.StreamID, toolApprovalRecord(request, nil, 1), "", activityOptions...); err != nil {
 			return nil, err
 		}
 	}
 	response := waitForToolApprovalResponse(ctx, request)
-	if request.StreamID != "" {
-		if err := PublishToolLifecycleEvent(ctx, streaming.ToolLifecycleInput{
-			EventID:      toolApprovalEventID(request.ToolCallID, "approval-response"),
-			StreamID:     request.StreamID,
-			Event:        streaming.ToolApprovalResponse,
-			ToolCallID:   request.ToolCallID,
-			ToolName:     request.ToolName,
-			ApprovalID:   request.ApprovalID,
-			Approved:     &response.Approved,
-			Reason:       response.Reason,
-			ToolMetadata: request.ToolMetadata,
-			Metadata:     request.Metadata,
-			Scope:        request.Scope,
-		}, activityOptions...); err != nil {
+	if writeRecords && request.StreamID != "" {
+		if err := WriteRecord(ctx, request.StreamID, toolApprovalRecord(request, &response, 2), "", activityOptions...); err != nil {
 			return nil, err
 		}
 	}
@@ -149,6 +129,55 @@ func toolApprovalState(response *ToolApprovalResponse) *activities.ToolApprovalS
 	}
 }
 
-func toolApprovalEventID(toolCallID string, phase string) string {
-	return fmt.Sprintf("tool:%s:%s", toolCallID, phase)
+func toolApprovalRecord(request ToolApprovalRequest, response *ToolApprovalResponse, version int) updates.WorkflowRecord {
+	status := "pending"
+	data := map[string]any{
+		"interactionId":   request.ApprovalID,
+		"interactionType": "tool-approval",
+		"title":           "Review " + request.ToolName,
+		"questions": []any{map[string]any{
+			"id":     request.ApprovalID,
+			"prompt": "Allow this tool call?",
+			"choices": []any{
+				map[string]any{"id": "approve", "label": "Approve", "value": map[string]any{"approved": true}},
+				map[string]any{"id": "deny", "label": "Deny", "value": map[string]any{"approved": false}},
+			},
+			"required": true,
+		}},
+		"origin": map[string]any{
+			"toolCallId": request.ToolCallID,
+			"toolName":   request.ToolName,
+			"input":      request.Input,
+		},
+	}
+	if len(request.ToolMetadata) > 0 {
+		data["toolMetadata"] = request.ToolMetadata
+	}
+	if len(request.Metadata) > 0 {
+		data["metadata"] = request.Metadata
+	}
+	if response != nil {
+		status = "denied"
+		if response.Approved {
+			status = "approved"
+		} else if response.TimedOut {
+			status = "timed-out"
+		} else if response.Canceled {
+			status = "canceled"
+		}
+		data["answer"] = map[string]any{
+			"approved": response.Approved,
+			"reason":   response.Reason,
+			"timedOut": response.TimedOut,
+			"canceled": response.Canceled,
+		}
+	}
+	return updates.WorkflowRecord{
+		RecordID:      "interaction:" + request.ApprovalID,
+		RecordVersion: version,
+		Kind:          updates.RecordKindInteraction,
+		Status:        status,
+		Data:          data,
+		Scope:         request.Scope,
+	}
 }

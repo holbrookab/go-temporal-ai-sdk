@@ -2,17 +2,18 @@ package activities
 
 import (
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 const (
-	InvokeModelActivity               = "go-temporal-ai-sdk.InvokeModel"
-	GenerateObjectActivity            = "go-temporal-ai-sdk.GenerateObject"
-	StreamObjectActivity              = "go-temporal-ai-sdk.StreamObject"
-	InvokeModelStreamActivity         = "go-temporal-ai-sdk.InvokeModelStream"
-	InvokeEmbeddingModelActivity      = "go-temporal-ai-sdk.InvokeEmbeddingModel"
-	InvokeToolActivity                = "go-temporal-ai-sdk.InvokeTool"
-	PublishToolLifecycleEventActivity = "go-temporal-ai-sdk.PublishToolLifecycleEvent"
+	InvokeModelActivity          = "go-temporal-ai-sdk.InvokeModel"
+	GenerateObjectActivity       = "go-temporal-ai-sdk.GenerateObject"
+	StreamObjectActivity         = "go-temporal-ai-sdk.StreamObject"
+	InvokeModelStreamActivity    = "go-temporal-ai-sdk.InvokeModelStream"
+	InvokeEmbeddingModelActivity = "go-temporal-ai-sdk.InvokeEmbeddingModel"
+	InvokeToolActivity           = "go-temporal-ai-sdk.InvokeTool"
+	WriteRecordActivity          = "go-temporal-ai-sdk.WriteRecord"
+	EndStreamActivity            = "go-temporal-ai-sdk.EndStream"
 )
 
 type ToolExecutionBoundary string
@@ -41,10 +42,11 @@ type StreamObjectArgs struct {
 }
 
 type StreamObjectResult struct {
-	StreamParts []ObjectStreamPart  `json:"streamParts,omitempty"`
-	Elements    []any               `json:"elements,omitempty"`
-	Request     *ai.RequestMetadata `json:"request,omitempty"`
-	Response    *ResponseMetadata   `json:"response,omitempty"`
+	StreamParts     []ObjectStreamPart       `json:"streamParts,omitempty"`
+	Elements        []any                    `json:"elements,omitempty"`
+	Request         *ai.RequestMetadata      `json:"request,omitempty"`
+	Response        *ResponseMetadata        `json:"response,omitempty"`
+	PreviewReceipts []updates.PreviewReceipt `json:"previewReceipts,omitempty"`
 }
 
 type InvokeModelStreamArgs struct {
@@ -53,10 +55,11 @@ type InvokeModelStreamArgs struct {
 }
 
 type InvokeModelStreamResult struct {
-	Result      *LanguageModelGenerateResult `json:"result,omitempty"`
-	StreamParts []StreamPart                 `json:"streamParts,omitempty"`
-	Request     *ai.RequestMetadata          `json:"request,omitempty"`
-	Response    *ResponseMetadata            `json:"response,omitempty"`
+	Result          *LanguageModelGenerateResult `json:"result,omitempty"`
+	StreamParts     []StreamPart                 `json:"streamParts,omitempty"`
+	Request         *ai.RequestMetadata          `json:"request,omitempty"`
+	Response        *ResponseMetadata            `json:"response,omitempty"`
+	PreviewReceipts []updates.PreviewReceipt     `json:"previewReceipts,omitempty"`
 }
 
 type InvokeEmbeddingModelArgs struct {
@@ -87,23 +90,15 @@ type ToolDefinition struct {
 }
 
 type InvokeToolArgs struct {
-	ToolCallID             string               `json:"toolCallId"`
-	ToolName               string               `json:"toolName"`
-	Input                  any                  `json:"input,omitempty"`
-	Messages               []Message            `json:"messages,omitempty"`
-	Context                any                  `json:"context,omitempty"`
-	ToolMetadata           ai.ProviderMetadata  `json:"toolMetadata,omitempty"`
-	Lifecycle              ToolLifecycleOptions `json:"lifecycle,omitempty"`
-	Artifacts              *ToolArtifactPolicy  `json:"artifacts,omitempty"`
-	Approval               *ToolApprovalState   `json:"approval,omitempty"`
-	SuppressInputLifecycle bool                 `json:"suppressInputLifecycle,omitempty"`
-}
-
-type ToolLifecycleOptions struct {
-	StreamID        string         `json:"streamId,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	DurableRequired bool           `json:"durableRequired,omitempty"`
-	streaming.Scope
+	ToolCallID   string              `json:"toolCallId"`
+	ToolName     string              `json:"toolName"`
+	Input        any                 `json:"input,omitempty"`
+	Messages     []Message           `json:"messages,omitempty"`
+	Context      any                 `json:"context,omitempty"`
+	ToolMetadata ai.ProviderMetadata `json:"toolMetadata,omitempty"`
+	Scope        updates.Scope       `json:"scope,omitempty"`
+	Artifacts    *ToolArtifactPolicy `json:"artifacts,omitempty"`
+	Approval     *ToolApprovalState  `json:"approval,omitempty"`
 }
 
 type ToolApprovalState struct {
@@ -126,4 +121,10 @@ type InvokeToolResult struct {
 	ProviderMetadata ai.ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
-type PublishToolLifecycleEventArgs = streaming.ToolLifecycleInput
+type WriteRecordArgs struct {
+	Event updates.RecordUpsertEvent `json:"event"`
+}
+
+type EndStreamArgs struct {
+	Event updates.StreamEndEvent `json:"event"`
+}

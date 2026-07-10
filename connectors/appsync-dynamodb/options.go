@@ -14,10 +14,17 @@ const (
 	defaultTTL              = time.Hour
 	defaultNamespace        = "chat"
 	defaultEventEntity      = "STREAM_EVENT"
-	defaultAttemptEntity    = "STREAM_ATTEMPT"
-	defaultEphemeralEntity  = "STREAM_EPHEMERAL"
+	defaultPreviewEntity    = "STREAM_PREVIEW"
+	defaultRecordEntity     = "WORKFLOW_RECORD"
+	defaultTerminalEntity   = "STREAM_TERMINAL"
 	defaultPartitionKeyName = "id"
 	defaultSortKeyName      = "createdAt"
+	defaultEventStreamKey   = "updateStreamId"
+	defaultEventCursorKey   = "updateCursor"
+	defaultPreviewStreamKey = "previewStreamId"
+	defaultPreviewTimeKey   = "previewUpdatedAt"
+	defaultRecordStreamKey  = "recordStreamId"
+	defaultRecordTimeKey    = "recordUpdatedAt"
 )
 
 type Options struct {
@@ -27,21 +34,26 @@ type Options struct {
 
 	HTTPClient *http.Client
 
-	TableName           string
-	AppSyncHTTPDomain   string
-	ChannelNamespace    string
-	PartitionKeyName    string
-	SortKeyName         string
-	AttemptSortKey      int64
-	TTL                 time.Duration
-	EventEntityType     string
-	AttemptEntityType   string
-	EphemeralEntityType string
+	TableName               string
+	AppSyncHTTPDomain       string
+	ChannelNamespace        string
+	PartitionKeyName        string
+	SortKeyName             string
+	StateSortKey            int64
+	TTL                     time.Duration
+	EventEntityType         string
+	PreviewEntityType       string
+	RecordEntityType        string
+	TerminalEntityType      string
+	EventStreamKeyName      string
+	EventCursorKeyName      string
+	PreviewStreamKeyName    string
+	PreviewUpdatedAtKeyName string
+	RecordStreamKeyName     string
+	RecordUpdatedAtKeyName  string
 
 	Resolver Resolver
 	Disabled bool
-
-	PersistEphemeralChunks bool
 }
 
 type Resolver interface {
@@ -88,16 +100,69 @@ func (o Options) eventEntityType() string {
 	return defaultEventEntity
 }
 
-func (o Options) attemptEntityType() string {
-	if o.AttemptEntityType != "" {
-		return o.AttemptEntityType
+func (o Options) previewEntityType() string {
+	if o.PreviewEntityType != "" {
+		return o.PreviewEntityType
 	}
-	return defaultAttemptEntity
+	return defaultPreviewEntity
 }
 
-func (o Options) ephemeralEntityType() string {
-	if o.EphemeralEntityType != "" {
-		return o.EphemeralEntityType
+func (o Options) recordEntityType() string {
+	if o.RecordEntityType != "" {
+		return o.RecordEntityType
 	}
-	return defaultEphemeralEntity
+	return defaultRecordEntity
+}
+
+func (o Options) terminalEntityType() string {
+	if o.TerminalEntityType != "" {
+		return o.TerminalEntityType
+	}
+	return defaultTerminalEntity
+}
+
+func (o Options) stateSortKey() int64 {
+	return o.StateSortKey
+}
+
+func (o Options) eventStreamKeyName() string {
+	if o.EventStreamKeyName != "" {
+		return o.EventStreamKeyName
+	}
+	return defaultEventStreamKey
+}
+
+func (o Options) eventCursorKeyName() string {
+	if o.EventCursorKeyName != "" {
+		return o.EventCursorKeyName
+	}
+	return defaultEventCursorKey
+}
+
+func (o Options) previewStreamKeyName() string {
+	if o.PreviewStreamKeyName != "" {
+		return o.PreviewStreamKeyName
+	}
+	return defaultPreviewStreamKey
+}
+
+func (o Options) previewUpdatedAtKeyName() string {
+	if o.PreviewUpdatedAtKeyName != "" {
+		return o.PreviewUpdatedAtKeyName
+	}
+	return defaultPreviewTimeKey
+}
+
+func (o Options) recordStreamKeyName() string {
+	if o.RecordStreamKeyName != "" {
+		return o.RecordStreamKeyName
+	}
+	return defaultRecordStreamKey
+}
+
+func (o Options) recordUpdatedAtKeyName() string {
+	if o.RecordUpdatedAtKeyName != "" {
+		return o.RecordUpdatedAtKeyName
+	}
+	return defaultRecordTimeKey
 }

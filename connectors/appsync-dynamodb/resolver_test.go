@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
 func TestDynamoDBResolverReturnsTypedStreamNotFound(t *testing.T) {
@@ -20,10 +20,10 @@ func TestDynamoDBResolverReturnsTypedStreamNotFound(t *testing.T) {
 	})
 
 	_, err := resolver.ResolveStream(context.Background(), "missing-stream")
-	if !errors.Is(err, streaming.ErrStreamNotFound) {
+	if !errors.Is(err, updates.ErrStreamNotFound) {
 		t.Fatalf("err = %v, want stream not found", err)
 	}
-	var notFound *streaming.StreamNotFoundError
+	var notFound *updates.StreamNotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("err = %T, want StreamNotFoundError", err)
 	}

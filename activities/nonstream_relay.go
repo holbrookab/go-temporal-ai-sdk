@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
-func failRelay(ctx context.Context, relay *streaming.Relay, err error) {
+func failRelay(ctx context.Context, relay *updates.Relay, err error) {
 	if err == nil {
 		return
 	}
@@ -19,7 +19,7 @@ func failRelay(ctx context.Context, relay *streaming.Relay, err error) {
 	_ = relay.Fail(ctx, err.Error())
 }
 
-func relayGenerateResult(ctx context.Context, relay *streaming.Relay, result *ai.LanguageModelGenerateResult) error {
+func relayGenerateResult(ctx context.Context, relay *updates.Relay, result *ai.LanguageModelGenerateResult) error {
 	for _, content := range result.Content {
 		for _, part := range finalContentStreamParts(content) {
 			if err := relay.Accept(ctx, part); err != nil {
@@ -38,7 +38,7 @@ func relayGenerateResult(ctx context.Context, relay *streaming.Relay, result *ai
 	})
 }
 
-func relayGenerateObjectResult(ctx context.Context, relay *streaming.Relay, result *ai.GenerateObjectResult) error {
+func relayGenerateObjectResult(ctx context.Context, relay *updates.Relay, result *ai.GenerateObjectResult) error {
 	if result.Reasoning != "" {
 		if err := relay.Accept(ctx, ai.StreamPart{Type: "reasoning-delta", ReasoningDelta: result.Reasoning}); err != nil {
 			return err

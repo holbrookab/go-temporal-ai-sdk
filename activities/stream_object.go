@@ -5,14 +5,15 @@ import (
 	"errors"
 
 	"github.com/holbrookab/go-ai/packages/ai"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 )
 
-func (a *Activities) consumeObjectStream(ctx context.Context, relay *streaming.Relay, streamResult *ai.StreamObjectResult) (*StreamObjectResult, error) {
+func (a *Activities) consumeObjectStream(ctx context.Context, relay *updates.Relay, streamResult *ai.StreamObjectResult) (*StreamObjectResult, error) {
 	stream := streamResult.Stream
 	elementsStream := streamResult.Elements
 	parts := []ai.ObjectStreamPart{}
 	elements := []any{}
+	finishRelayed := false
 
 	for stream != nil || elementsStream != nil {
 		select {
@@ -32,31 +33,38 @@ func (a *Activities) consumeObjectStream(ctx context.Context, relay *streaming.R
 				continue
 			}
 			if part.Err != nil {
-				_ = relay.Discard(ctx, part.Err.Error())
+				_ = relay.Fail(ctx, part.Err.Error())
 				return nil, part.Err
 			}
 			parts = append(parts, part)
+			if part.Type == "finish" && finishRelayed {
+				continue
+			}
 			if err := relayObjectStreamPart(ctx, relay, part); err != nil {
-				_ = relay.Discard(ctx, err.Error())
+				_ = relay.Fail(ctx, err.Error())
 				return nil, err
+			}
+			if part.Type == "finish" {
+				finishRelayed = true
 			}
 		}
 	}
 
-	if err := relay.Commit(ctx); err != nil {
+	if err := relay.Succeed(ctx); err != nil {
 		return nil, err
 	}
 	request := streamResult.Request
 	response := ResponseMetadataFromAI(streamResult.Response)
 	return &StreamObjectResult{
-		StreamParts: ObjectStreamPartsFromAI(parts),
-		Elements:    elements,
-		Request:     &request,
-		Response:    &response,
+		StreamParts:     ObjectStreamPartsFromAI(parts),
+		Elements:        elements,
+		Request:         &request,
+		Response:        &response,
+		PreviewReceipts: relay.Receipts(),
 	}, nil
 }
 
-func relayObjectStreamPart(ctx context.Context, relay *streaming.Relay, part ai.ObjectStreamPart) error {
+func relayObjectStreamPart(ctx context.Context, relay *updates.Relay, part ai.ObjectStreamPart) error {
 	switch part.Type {
 	case "text-delta":
 		return relay.Accept(ctx, ai.StreamPart{

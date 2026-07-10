@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://holbrookab.dev/temporal-ai/protocol/v2/replay-response.schema.json",
+  "title": "Temporal Durable Replay Response v2",
+  "type": "object",
+  "properties": {
+    "protocolVersion": { "const": 2 },
+    "streamId": { "type": "string", "minLength": 1 },
+    "cursor": { "type": "string" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "update-event.schema.json" }
+    },
+    "previews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "attemptId": { "type": "string", "minLength": 1 },
+          "targetRecordId": { "type": "string", "minLength": 1 },
+          "lane": { "enum": ["text", "reasoning", "object", "tool-input"] },
+          "status": { "enum": ["active", "succeeded"] },
+          "sequence": { "type": "integer", "minimum": 0 },
+          "snapshot": { "$ref": "update-event.schema.json#/$defs/snapshot" },
+          "scope": { "$ref": "update-event.schema.json#/$defs/scope" },
+          "updatedAt": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["attemptId", "targetRecordId", "lane", "status", "sequence", "updatedAt"],
+        "additionalProperties": false
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "update-event.schema.json#/$defs/record" }
+    },
+    "terminal": { "$ref": "update-event.schema.json#/$defs/streamEnd" }
+  },
+  "required": ["protocolVersion", "streamId", "cursor", "events", "previews", "records"],
+  "additionalProperties": false
+}

@@ -5,7 +5,7 @@ import (
 
 	"github.com/holbrookab/go-ai/packages/ai"
 	"github.com/holbrookab/go-temporal-ai-sdk/activities"
-	"github.com/holbrookab/go-temporal-ai-sdk/streaming"
+	"github.com/holbrookab/go-temporal-ai-sdk/updates"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -17,7 +17,7 @@ type ActivityOptions struct {
 	LocalLanguageModel     workflow.LocalActivityOptions
 	LocalEmbeddingModel    workflow.LocalActivityOptions
 	LocalTool              workflow.LocalActivityOptions
-	Stream                 workflow.ActivityOptions
+	Record                 workflow.ActivityOptions
 	LanguageModelBoundary  activities.ToolExecutionBoundary
 	EmbeddingModelBoundary activities.ToolExecutionBoundary
 }
@@ -82,8 +82,8 @@ func localToolActivityOptions(options ActivityOptions) workflow.LocalActivityOpt
 	return mergeLocalActivityOptions(defaultLocalToolActivityOptions(), options.LocalTool)
 }
 
-func streamActivityOptions(options ActivityOptions) workflow.ActivityOptions {
-	return mergeActivityOptions(defaultActivityOptions(activities.PublishToolLifecycleEventActivity), mergeActivityOptions(options.Default, options.Stream))
+func recordActivityOptions(options ActivityOptions) workflow.ActivityOptions {
+	return mergeActivityOptions(defaultActivityOptions(activities.WriteRecordActivity), mergeActivityOptions(options.Default, options.Record))
 }
 
 func InvokeModel(ctx workflow.Context, modelID string, options ai.LanguageModelCallOptions, activityOptions ...ActivityOptions) (*ai.LanguageModelGenerateResult, error) {
@@ -226,16 +226,39 @@ func InvokeToolLocal(ctx workflow.Context, args activities.InvokeToolArgs, activ
 	return &result, nil
 }
 
-func PublishToolLifecycleEvent(ctx workflow.Context, input streaming.ToolLifecycleInput, activityOptions ...ActivityOptions) error {
-	if input.StreamID == "" {
+// WriteRecord durably accepts a complete canonical record. It always runs in a
+// separate activity from model and tool execution so persistence retries cannot
+// repeat those side effects.
+func WriteRecord(ctx workflow.Context, streamID string, record updates.WorkflowRecord, acceptedAttemptID string, activityOptions ...ActivityOptions) error {
+	if streamID == "" {
 		return nil
 	}
 	ao := ActivityOptions{}
 	if len(activityOptions) > 0 {
 		ao = activityOptions[0]
 	}
-	ctx = workflow.WithActivityOptions(ctx, streamActivityOptions(ao))
-	return workflow.ExecuteActivity(ctx, activities.PublishToolLifecycleEventActivity, activities.PublishToolLifecycleEventArgs(input)).Get(ctx, nil)
+	now := workflow.Now(ctx).UnixMilli()
+	if record.UpdatedAt == 0 {
+		record.UpdatedAt = now
+	}
+	event := updates.NewRecordUpsertEvent(streamID, record, acceptedAttemptID, now)
+	ctx = workflow.WithActivityOptions(ctx, recordActivityOptions(ao))
+	return workflow.ExecuteActivity(ctx, activities.WriteRecordActivity, activities.WriteRecordArgs{Event: event}).Get(ctx, nil)
+}
+
+// EndStream persists the terminal subscription event. Callers must invoke it
+// only after all accepted records have been written.
+func EndStream(ctx workflow.Context, streamID string, outcome updates.StreamOutcome, errorText string, activityOptions ...ActivityOptions) error {
+	if streamID == "" {
+		return nil
+	}
+	ao := ActivityOptions{}
+	if len(activityOptions) > 0 {
+		ao = activityOptions[0]
+	}
+	event := updates.NewStreamEndEvent(streamID, outcome, errorText, workflow.Now(ctx).UnixMilli())
+	ctx = workflow.WithActivityOptions(ctx, recordActivityOptions(ao))
+	return workflow.ExecuteActivity(ctx, activities.EndStreamActivity, activities.EndStreamArgs{Event: event}).Get(ctx, nil)
 }
 
 func mergeActivityOptions(base, override workflow.ActivityOptions) workflow.ActivityOptions {
